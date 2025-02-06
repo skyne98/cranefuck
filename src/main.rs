@@ -17,7 +17,8 @@ fn main() -> Result<()> {
         let ir = parser::to_ir(tokens.clone())?;
         println!("IR: {:?}", ir);
 
-        interpret(ir)?;
+        let result = interpret(ir)?;
+        println!("Result: {}", result);
     }
 
     Ok(())
