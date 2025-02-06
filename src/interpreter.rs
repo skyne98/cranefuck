@@ -3,7 +3,7 @@ use std::io::{BufRead, Read, Write};
 use anyhow::Result;
 use thiserror::Error;
 
-use crate::parser::Token;
+use crate::parser::{Ir, IrLoopType, Token};
 
 #[derive(Error, Debug)]
 pub enum RuntimeError {
@@ -15,100 +15,62 @@ pub enum RuntimeError {
     UnmatchedLoop { index: usize },
 
     #[error("generic error")]
-    Generic(anyhow::Error),
+    Generic(#[from] anyhow::Error),
 }
 
-pub fn interpret(tokens: impl AsRef<[Token]>) -> Result<u8, RuntimeError> {
+pub fn interpret(ir_ops: impl AsRef<[Ir]>) -> Result<i64, RuntimeError> {
     let mut memory = vec![0; 30_000];
     let mut instruction_pointer = 0;
     let mut data_pointer = 0;
-    let tokens = tokens.as_ref();
+    let ops = ir_ops.as_ref();
 
     loop {
-        if instruction_pointer == tokens.len() {
+        if instruction_pointer >= ops.len() {
             return Ok(memory[data_pointer]);
         }
 
-        let token = &tokens[instruction_pointer];
-        match token {
-            Token::MoveRight => {
-                if data_pointer + 1 >= memory.len() {
-                    data_pointer = 0;
+        let op = &ops[instruction_pointer];
+        match op {
+            Ir::Move(amount) => {
+                if data_pointer as isize + amount >= memory.len() as isize {
+                    data_pointer =
+                        (amount - (memory.len() as isize - data_pointer as isize)) as usize;
+                } else if data_pointer as isize + amount < 0 {
+                    data_pointer =
+                        (memory.len() as isize - (amount - data_pointer as isize)) as usize;
                 } else {
-                    data_pointer += 1;
+                    data_pointer = ((data_pointer as isize) + amount) as usize;
                 }
             }
-            Token::MoveLeft => {
-                if data_pointer == 0 {
-                    data_pointer = memory.len() - 1;
-                } else {
-                    data_pointer -= 1;
+            Ir::Data(amount) => memory[data_pointer] += amount,
+            Ir::IO(true) => {
+                let mut buffer = [0; 1];
+                std::io::stdin().read_exact(&mut buffer)?;
+
+                if buffer[0] == 0xA {
+                    println!("newline detected");
+                    buffer[0] = 10;
                 }
+
+                memory[data_pointer] = buffer[0] as i64;
             }
-            Token::Increment => memory[data_pointer] += 1,
-            Token::Decrement => memory[data_pointer] -= 1,
-            Token::Output => {
+            Ir::IO(false) => {
                 let value = memory[data_pointer] as u8 as char;
                 print!("{}", value);
                 std::io::stdout().flush()?;
             }
-            Token::Input => {
-                let mut buffer = [0; 1];
-                std::io::stdin().read_exact(&mut buffer)?;
-                memory[data_pointer] = buffer[0];
-            }
-            Token::LoopStart => {
-                let data_value = memory[data_pointer];
-
-                if data_value == 0 {
-                    let mut counter = 0;
-                    let mut temporary_pointer = instruction_pointer + 1;
-
-                    loop {
-                        let token = &tokens[temporary_pointer];
-
-                        match token {
-                            Token::LoopStart => counter += 1,
-                            Token::LoopEnd => {
-                                if counter > 0 {
-                                    counter -= 1;
-                                } else {
-                                    instruction_pointer = temporary_pointer + 1;
-                                    break;
-                                }
-                            }
-                            _ => (),
-                        }
-
-                        temporary_pointer += 1;
-                    }
+            Ir::Loop(IrLoopType::Start, loop_match) => {
+                let value = memory[data_pointer];
+                if value == 0 {
+                    instruction_pointer = loop_match + 1;
+                    continue;
                 }
             }
-            Token::LoopEnd => {
-                let data_value = memory[data_pointer];
-
-                if data_value != 0 {
-                    let mut counter = 0;
-                    let mut temporary_pointer = instruction_pointer - 1;
-
-                    loop {
-                        let token = &tokens[temporary_pointer];
-
-                        match token {
-                            Token::LoopEnd => counter += 1,
-                            Token::LoopStart => {
-                                if counter > 0 {
-                                    counter -= 1;
-                                } else {
-                                    instruction_pointer = temporary_pointer;
-                                    break;
-                                }
-                            }
-                            _ => (),
-                        }
-
-                        temporary_pointer -= 1;
-                    }
+            Ir::Loop(IrLoopType::End, loop_match) => {
+                let value = memory[data_pointer];
+                if value != 0 {
+                    instruction_pointer = *loop_match;
+                    continue;
                 }
             }
         }

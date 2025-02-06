@@ -14,7 +14,10 @@ fn main() -> Result<()> {
         let tokens = parser::tokenize(&input);
         println!("Tokens: {:?}", tokens);
 
-        interpret(tokens)?;
+        let ir = parser::to_ir(tokens.clone())?;
+        println!("IR: {:?}", ir);
+
+        interpret(ir)?;
     }
 
     Ok(())
