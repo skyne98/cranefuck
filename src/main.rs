@@ -2,8 +2,10 @@
 
 use anyhow::Result;
 use interpreter::interpret;
+use jit::jit;
 
 pub mod interpreter;
+pub mod jit;
 pub mod parser;
 
 fn main() -> Result<()> {
@@ -17,8 +19,10 @@ fn main() -> Result<()> {
         let ir = parser::to_ir(tokens.clone())?;
         println!("IR: {:?}", ir);
 
-        let result = interpret(ir)?;
-        println!("Result: {}", result);
+        // let result = interpret(ir.clone())?;
+        // println!("Result: {}", result);
+
+        jit(ir);
     }
 
     Ok(())

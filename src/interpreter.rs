@@ -21,7 +21,7 @@ pub enum RuntimeError {
     Generic(#[from] anyhow::Error),
 }
 
-pub fn interpret(ir_ops: impl AsRef<[Ir]>) -> Result<i8, RuntimeError> {
+pub fn interpret(ir_ops: impl AsRef<[Ir]>) -> Result<u8, RuntimeError> {
     let mut memory = vec![0; 30_000];
     let mut instruction_pointer = 0;
     let mut data_pointer = 0;
@@ -39,12 +39,15 @@ pub fn interpret(ir_ops: impl AsRef<[Ir]>) -> Result<i8, RuntimeError> {
         }
 
         let op = &ops[instruction_pointer];
+        // println!("Op: {:?}", op);
         match op {
             Ir::Move(amount) => {
                 data_pointer =
                     ((data_pointer as isize + amount).rem_euclid(memory.len() as isize)) as usize;
             }
-            Ir::Data(amount) => memory[data_pointer] += *amount as i8,
+            Ir::Data(amount) => {
+                memory[data_pointer] = memory[data_pointer].wrapping_add_signed(*amount as i8);
+            }
             Ir::IO(true) => {
                 if input_buffer.len() == 0 {
                     let mut line = String::new();
@@ -58,7 +61,7 @@ pub fn interpret(ir_ops: impl AsRef<[Ir]>) -> Result<i8, RuntimeError> {
                 if character == '\n' {
                     memory[data_pointer] = 10;
                 } else {
-                    memory[data_pointer] = character as i8;
+                    memory[data_pointer] = character as u8;
                 }
             }
             Ir::IO(false) => {
