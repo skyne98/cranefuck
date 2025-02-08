@@ -42,11 +42,29 @@ pub fn jit(ir_ops: impl AsRef<[Ir]>) {
         let memory_ptr = bcx.block_params(block)[0];
         let memory_len = bcx.block_params(block)[1];
 
-        // Increase the value at the memory pointer by 1
-        let memory_value = bcx.ins().load(types::I64, MemFlags::new(), memory_ptr, 0);
-        let new_memory_value = bcx.ins().iadd_imm(memory_value, 1);
-        bcx.ins()
-            .store(MemFlags::new(), new_memory_value, memory_ptr, 0);
+        // Data pointer variable
+        let mut data_offset = bcx.ins().iconst(types::I64, 0);
+
+        let ir_ops = ir_ops.as_ref();
+        for (index, ir) in ir_ops.iter().enumerate() {
+            match ir {
+                Ir::Data(amount) => {
+                    let data_ptr = bcx.ins().iadd(memory_ptr, data_offset);
+
+                    // Increase the value at the memory pointer by the amount
+                    let memory_value = bcx.ins().load(types::I64, MemFlags::new(), data_ptr, 0);
+                    let new_memory_value = bcx.ins().iadd_imm(memory_value, *amount as i64);
+                    bcx.ins()
+                        .store(MemFlags::new(), new_memory_value, data_ptr, 0);
+                }
+                Ir::Move(amount) => {
+                    data_offset = bcx.ins().iadd(data_offset, *amount as i64);
+                }
+                _ => {
+                    // do nothing
+                }
+            }
+        }
 
         bcx.ins().return_(&[]);
         bcx.seal_all_blocks();
