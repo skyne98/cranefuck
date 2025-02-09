@@ -33,35 +33,37 @@ pub fn jit(ir_ops: impl AsRef<[Ir]>) {
     ctx.func.name = UserFuncName::user(0, main_func.as_u32());
 
     {
-        let mut bcx: FunctionBuilder = FunctionBuilder::new(&mut ctx.func, &mut func_ctx);
-        let block = bcx.create_block();
+        let mut builder: FunctionBuilder = FunctionBuilder::new(&mut ctx.func, &mut func_ctx);
+        let block = builder.create_block();
 
-        bcx.switch_to_block(block);
-        bcx.append_block_params_for_function_params(block);
+        builder.switch_to_block(block);
+        builder.append_block_params_for_function_params(block);
 
-        let memory_ptr = bcx.block_params(block)[0];
-        let memory_len = bcx.block_params(block)[1];
+        let memory_ptr = builder.block_params(block)[0];
+        let memory_len = builder.block_params(block)[1];
 
         // Data pointer variable
         let data_offset = Variable::new(0);
-        bcx.declare_var(data_offset, types::I64);
-        let mut data_offset_var = bcx.use_var(data_offset);
+        builder.declare_var(data_offset, types::I64);
+        let mut data_offset_var = builder.use_var(data_offset);
 
         let ir_ops = ir_ops.as_ref();
         for (index, ir) in ir_ops.iter().enumerate() {
             match ir {
                 Ir::Data(amount) => {
-                    let data_ptr = bcx.ins().iadd(memory_ptr, data_offset_var);
+                    let data_ptr = builder.ins().iadd(memory_ptr, data_offset_var);
 
                     // Increase the value at the memory pointer by the amount
-                    let memory_value = bcx.ins().load(types::I64, MemFlags::new(), data_ptr, 0);
-                    let new_memory_value = bcx.ins().iadd_imm(memory_value, *amount as i64);
-                    bcx.ins()
+                    let memory_value = builder.ins().load(types::I64, MemFlags::new(), data_ptr, 0);
+                    let constant = builder.ins().iconst(types::I64, *amount as i64);
+                    let (new_memory_value, _) = builder.ins().sadd_overflow(memory_value, constant);
+                    builder
+                        .ins()
                         .store(MemFlags::new(), new_memory_value, data_ptr, 0);
                 }
                 Ir::Move(amount) => {
-                    data_offset_var = bcx.ins().iadd_imm(data_offset_var, *amount as i64);
-                    bcx.def_var(data_offset, data_offset_var);
+                    data_offset_var = builder.ins().iadd_imm(data_offset_var, *amount as i64);
+                    builder.def_var(data_offset, data_offset_var);
                 }
                 _ => {
                     // do nothing
@@ -69,9 +71,9 @@ pub fn jit(ir_ops: impl AsRef<[Ir]>) {
             }
         }
 
-        bcx.ins().return_(&[]);
-        bcx.seal_all_blocks();
-        bcx.finalize();
+        builder.ins().return_(&[]);
+        builder.seal_all_blocks();
+        builder.finalize();
     }
 
     module.define_function(main_func, &mut ctx).unwrap();
