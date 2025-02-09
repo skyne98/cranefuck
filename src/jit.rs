@@ -54,8 +54,8 @@ pub fn jit(ir_ops: impl AsRef<[Ir]>) {
                     let data_ptr = builder.ins().iadd(memory_ptr, data_offset_var);
 
                     // Increase the value at the memory pointer by the amount
-                    let memory_value = builder.ins().load(types::I64, MemFlags::new(), data_ptr, 0);
-                    let constant = builder.ins().iconst(types::I64, *amount as i64);
+                    let memory_value = builder.ins().load(types::I8, MemFlags::new(), data_ptr, 0);
+                    let constant = builder.ins().iconst(types::I8, *amount as i64);
                     let (new_memory_value, _) = builder.ins().sadd_overflow(memory_value, constant);
                     builder
                         .ins()
