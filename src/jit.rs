@@ -1,7 +1,7 @@
 use cranelift::{codegen::ir::UserFuncName, prelude::*};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{default_libcall_names, Linkage, Module};
-use std::mem;
+use std::{collections::HashMap, mem};
 
 use crate::parser::Ir;
 
@@ -34,13 +34,13 @@ pub fn jit(ir_ops: impl AsRef<[Ir]>) {
 
     {
         let mut builder: FunctionBuilder = FunctionBuilder::new(&mut ctx.func, &mut func_ctx);
-        let block = builder.create_block();
+        let entry_block = builder.create_block();
 
-        builder.switch_to_block(block);
-        builder.append_block_params_for_function_params(block);
+        builder.switch_to_block(entry_block);
+        builder.append_block_params_for_function_params(entry_block);
 
-        let memory_ptr = builder.block_params(block)[0];
-        let memory_len = builder.block_params(block)[1];
+        let memory_ptr = builder.block_params(entry_block)[0];
+        let memory_len = builder.block_params(entry_block)[1];
 
         // Data pointer variable
         let data_offset = Variable::new(0);
@@ -48,7 +48,36 @@ pub fn jit(ir_ops: impl AsRef<[Ir]>) {
         let mut data_offset_var = builder.use_var(data_offset);
 
         let ir_ops = ir_ops.as_ref();
+
+        // First pass to create the blocks
+        let mut operation_to_block = HashMap::new();
         for (index, ir) in ir_ops.iter().enumerate() {
+            match ir {
+                Ir::Loop(_, _) => {
+                    operation_to_block.insert(index, builder.create_block());
+                }
+                _ => {} // do nothing
+            }
+        }
+
+        // Second pass for compiling the operations
+        let mut current_block = entry_block;
+        let mut current_block_index = -1;
+        for (index, ir) in ir_ops.iter().enumerate() {
+            let index_block = operation_to_block.get(&index);
+            if let Some(block) = index_block {
+                if index as i32 != current_block_index {
+                    println!(
+                        "Switching from block {} to block {}",
+                        current_block_index, index
+                    );
+                    builder.ins().jump(*block, &[]);
+                    current_block = *block;
+                    current_block_index = index as i32;
+                    builder.switch_to_block(current_block);
+                }
+            }
+
             match ir {
                 Ir::Data(amount) => {
                     let data_ptr = builder.ins().iadd(memory_ptr, data_offset_var);
@@ -79,11 +108,15 @@ pub fn jit(ir_ops: impl AsRef<[Ir]>) {
             }
         }
 
+        let exit_block = builder.create_block();
+        builder.ins().jump(exit_block, &[]);
+        builder.switch_to_block(exit_block);
         builder.ins().return_(&[]);
         builder.seal_all_blocks();
         builder.finalize();
     }
 
+    println!("{}", ctx.func.display());
     module.define_function(main_func, &mut ctx).unwrap();
     module.clear_context(&mut ctx);
 
