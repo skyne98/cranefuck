@@ -63,6 +63,14 @@ pub fn jit(ir_ops: impl AsRef<[Ir]>) {
                 }
                 Ir::Move(amount) => {
                     data_offset_var = builder.ins().iadd_imm(data_offset_var, *amount as i64);
+                    let remainder = builder.ins().srem(data_offset_var, memory_len);
+                    let less_than_zero =
+                        builder.ins().icmp_imm(IntCC::SignedLessThan, remainder, 0);
+                    let increased_data_offset = builder.ins().iadd(remainder, memory_len);
+                    data_offset_var =
+                        builder
+                            .ins()
+                            .select(less_than_zero, increased_data_offset, remainder);
                     builder.def_var(data_offset, data_offset_var);
                 }
                 _ => {
