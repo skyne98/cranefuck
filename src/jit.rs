@@ -263,7 +263,7 @@ pub fn jit(ir_ops: impl AsRef<[Ir]>) {
     // Cast it to a rust function pointer type.
     let ptr_b = unsafe { mem::transmute::<_, extern "C" fn(i64, i64, i64)>(code_b) };
 
-    let mut memory = [0u8; 1000];
+    let mut memory = [0u8; 30000];
     let memory_ptr = { memory.as_mut_ptr() as *mut i64 };
     let mut input_buffer: VecDeque<char> = VecDeque::new();
     let input_buffer_ptr = (&mut input_buffer) as *mut _ as *mut i64;
@@ -272,6 +272,4 @@ pub fn jit(ir_ops: impl AsRef<[Ir]>) {
         memory.len() as i64,
         input_buffer_ptr as i64,
     );
-    println!();
-    println!("Result: {:?}", memory);
 }
