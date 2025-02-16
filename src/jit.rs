@@ -255,7 +255,9 @@ pub fn jit(ir_ops: impl AsRef<[Ir]>) {
     module.clear_context(&mut ctx);
 
     // Perform linking.
-    module.finalize_definitions().unwrap();
+    module
+        .finalize_definitions()
+        .expect("Failed to finalize definitions");
 
     // Get a raw pointer to the generated code.
     let code_b = module.get_finalized_function(main_func);
