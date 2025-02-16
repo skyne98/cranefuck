@@ -1,9 +1,53 @@
-use cranelift::{codegen::ir::UserFuncName, prelude::*};
+use cranelift::{
+    codegen::ir::{FuncRef, UserFuncName},
+    prelude::*,
+};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{default_libcall_names, Linkage, Module};
-use std::{collections::HashMap, mem};
+use std::{
+    collections::{HashMap, VecDeque},
+    io::Write,
+    mem,
+};
 
 use crate::parser::{Ir, IrLoopType};
+
+#[no_mangle]
+pub extern "C" fn io_input(input_buffer: *const i64) -> u8 {
+    let input_buffer =
+        unsafe { std::mem::transmute::<*const i64, &mut VecDeque<char>>(input_buffer) };
+
+    if input_buffer.len() == 0 {
+        let mut line = String::new();
+        std::io::stdin()
+            .read_line(&mut line)
+            .expect("Failed to read line");
+        line = line.replace("\r\n", "\n");
+        input_buffer.extend(line.chars());
+    }
+
+    let character = input_buffer.pop_front().expect("No more input");
+
+    if character == '\n' {
+        10
+    } else {
+        character as u8
+    }
+}
+#[no_mangle]
+pub extern "C" fn io_output(value: u8) {
+    let char = if value == 10 {
+        if cfg!(windows) {
+            "\r\n".to_string()
+        } else {
+            "\n".to_string()
+        }
+    } else {
+        (value as char).to_string()
+    };
+    print!("{}", char);
+    std::io::stdout().flush().expect("Failed to flush stdout");
+}
 
 pub fn jit(ir_ops: impl AsRef<[Ir]>) {
     let mut flag_builder = settings::builder();
@@ -16,12 +60,29 @@ pub fn jit(ir_ops: impl AsRef<[Ir]>) {
     let isa = isa_builder
         .finish(settings::Flags::new(flag_builder))
         .unwrap();
-    let mut module = JITModule::new(JITBuilder::with_isa(isa, default_libcall_names()));
+    let mut jit_builder = JITBuilder::with_isa(isa, default_libcall_names());
+    jit_builder.symbol("__io_output", io_output as *const u8);
+    jit_builder.symbol("__io_input", io_input as *const u8);
+    let mut module = JITModule::new(jit_builder);
+
+    // IO functions
+    let mut io_output_sig = module.make_signature();
+    io_output_sig.params.push(AbiParam::new(types::I8));
+    let io_output_func = module
+        .declare_function("__io_output", Linkage::Import, &io_output_sig)
+        .unwrap();
+    let mut io_input_sig = module.make_signature();
+    io_input_sig.params.push(AbiParam::new(types::I64));
+    io_input_sig.returns.push(AbiParam::new(types::I8));
+    let io_input_func = module
+        .declare_function("__io_input", Linkage::Import, &io_input_sig)
+        .unwrap();
 
     let mut ctx = module.make_context();
     let mut func_ctx = FunctionBuilderContext::new();
 
     let mut func_sig = module.make_signature();
+    func_sig.params.push(AbiParam::new(types::I64));
     func_sig.params.push(AbiParam::new(types::I64));
     func_sig.params.push(AbiParam::new(types::I64));
 
@@ -41,14 +102,20 @@ pub fn jit(ir_ops: impl AsRef<[Ir]>) {
 
         let memory_ptr = builder.block_params(entry_block)[0];
         let memory_len = builder.block_params(entry_block)[1];
+        let input_buffer_ptr = builder.block_params(entry_block)[2];
 
         // Data pointer variable
         let data_offset = Variable::new(0);
         builder.declare_var(data_offset, types::I64);
-        let mut data_offset_var = builder.use_var(data_offset);
+
+        // IO functions
+        let input_callee = module.declare_func_in_func(io_input_func, &mut builder.func);
+        let output_callee = module.declare_func_in_func(io_output_func, &mut builder.func);
+
+        // Pre-create an exit block for use when index+1 is out of range.
+        let exit_block = builder.create_block();
 
         let ir_ops = ir_ops.as_ref();
-
         // First pass to create the blocks
         let mut operation_to_block = HashMap::new();
         for (index, ir) in ir_ops.iter().enumerate() {
@@ -59,12 +126,17 @@ pub fn jit(ir_ops: impl AsRef<[Ir]>) {
                 _ => {} // do nothing
             }
         }
-        //...then create blocks for every loop start/end successor (next operation onwards)
+        // Also create blocks for the successor of each loop instruction.
+        // If index+1 is beyond the end, use exit_block.
         for (index, ir) in ir_ops.iter().enumerate() {
             if let Ir::Loop(_, _) = ir {
                 let next_index = index + 1;
-                if let None = operation_to_block.get(&next_index) {
-                    operation_to_block.insert(next_index, builder.create_block());
+                if next_index < ir_ops.len() {
+                    operation_to_block
+                        .entry(next_index)
+                        .or_insert_with(|| builder.create_block());
+                } else {
+                    operation_to_block.insert(next_index, exit_block);
                 }
             }
         }
@@ -90,6 +162,7 @@ pub fn jit(ir_ops: impl AsRef<[Ir]>) {
 
             match ir {
                 Ir::Data(amount) => {
+                    let data_offset_var = builder.use_var(data_offset);
                     let data_ptr = builder.ins().iadd(memory_ptr, data_offset_var);
 
                     // Increase the value at the memory pointer by the amount
@@ -101,6 +174,7 @@ pub fn jit(ir_ops: impl AsRef<[Ir]>) {
                         .store(MemFlags::new(), new_memory_value, data_ptr, 0);
                 }
                 Ir::Move(amount) => {
+                    let mut data_offset_var = builder.use_var(data_offset);
                     data_offset_var = builder.ins().iadd_imm(data_offset_var, *amount as i64);
                     let remainder = builder.ins().srem(data_offset_var, memory_len);
                     let less_than_zero =
@@ -112,7 +186,21 @@ pub fn jit(ir_ops: impl AsRef<[Ir]>) {
                             .select(less_than_zero, increased_data_offset, remainder);
                     builder.def_var(data_offset, data_offset_var);
                 }
+                Ir::IO(true) => {
+                    let data_offset_var = builder.use_var(data_offset);
+                    let data_ptr = builder.ins().iadd(memory_ptr, data_offset_var);
+                    let result = builder.ins().call(input_callee, &[input_buffer_ptr]);
+                    let result = builder.inst_results(result)[0];
+                    builder.ins().store(MemFlags::new(), result, data_ptr, 0);
+                }
+                Ir::IO(false) => {
+                    let data_offset_var = builder.use_var(data_offset);
+                    let data_ptr = builder.ins().iadd(memory_ptr, data_offset_var);
+                    let memory_value = builder.ins().load(types::I8, MemFlags::new(), data_ptr, 0);
+                    builder.ins().call(output_callee, &[memory_value]);
+                }
                 Ir::Loop(open, jump_index) => {
+                    let data_offset_var = builder.use_var(data_offset);
                     let successor_block = operation_to_block
                         .get(&(index + 1))
                         .expect("Successor block not found");
@@ -152,7 +240,6 @@ pub fn jit(ir_ops: impl AsRef<[Ir]>) {
             }
         }
 
-        let exit_block = builder.create_block();
         if !skip_next_jump {
             builder.ins().jump(exit_block, &[]);
         }
@@ -162,7 +249,8 @@ pub fn jit(ir_ops: impl AsRef<[Ir]>) {
         builder.finalize();
     }
 
-    println!("{}", ctx.func.display());
+    let mut file = std::fs::File::create("jit.ll").unwrap();
+    write!(file, "{}", ctx.func.display()).expect("Unable to write to file");
     module.define_function(main_func, &mut ctx).unwrap();
     module.clear_context(&mut ctx);
 
@@ -173,10 +261,17 @@ pub fn jit(ir_ops: impl AsRef<[Ir]>) {
     let code_b = module.get_finalized_function(main_func);
 
     // Cast it to a rust function pointer type.
-    let ptr_b = unsafe { mem::transmute::<_, extern "C" fn(i64, i64)>(code_b) };
+    let ptr_b = unsafe { mem::transmute::<_, extern "C" fn(i64, i64, i64)>(code_b) };
 
-    let mut memory = [0u8; 10];
+    let mut memory = [0u8; 1000];
     let memory_ptr = { memory.as_mut_ptr() as *mut i64 };
-    ptr_b(memory_ptr as i64, memory.len() as i64);
+    let mut input_buffer: VecDeque<char> = VecDeque::new();
+    let input_buffer_ptr = (&mut input_buffer) as *mut _ as *mut i64;
+    ptr_b(
+        memory_ptr as i64,
+        memory.len() as i64,
+        input_buffer_ptr as i64,
+    );
+    println!();
     println!("Result: {:?}", memory);
 }
