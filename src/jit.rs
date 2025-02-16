@@ -3,7 +3,7 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{default_libcall_names, Linkage, Module};
 use std::{collections::HashMap, mem};
 
-use crate::parser::Ir;
+use crate::parser::{Ir, IrLoopType};
 
 pub fn jit(ir_ops: impl AsRef<[Ir]>) {
     let mut flag_builder = settings::builder();
@@ -59,22 +59,32 @@ pub fn jit(ir_ops: impl AsRef<[Ir]>) {
                 _ => {} // do nothing
             }
         }
+        //...then create blocks for every loop start/end successor (next operation onwards)
+        for (index, ir) in ir_ops.iter().enumerate() {
+            if let Ir::Loop(_, _) = ir {
+                let next_index = index + 1;
+                if let None = operation_to_block.get(&next_index) {
+                    operation_to_block.insert(next_index, builder.create_block());
+                }
+            }
+        }
 
         // Second pass for compiling the operations
-        let mut current_block = entry_block;
+        let mut _current_block = entry_block;
         let mut current_block_index = -1;
+        let mut skip_next_jump = false;
         for (index, ir) in ir_ops.iter().enumerate() {
             let index_block = operation_to_block.get(&index);
             if let Some(block) = index_block {
                 if index as i32 != current_block_index {
-                    println!(
-                        "Switching from block {} to block {}",
-                        current_block_index, index
-                    );
-                    builder.ins().jump(*block, &[]);
-                    current_block = *block;
+                    if !skip_next_jump {
+                        builder.ins().jump(*block, &[]);
+                    } else {
+                        skip_next_jump = false;
+                    }
+                    _current_block = *block;
                     current_block_index = index as i32;
-                    builder.switch_to_block(current_block);
+                    builder.switch_to_block(_current_block);
                 }
             }
 
@@ -102,6 +112,40 @@ pub fn jit(ir_ops: impl AsRef<[Ir]>) {
                             .select(less_than_zero, increased_data_offset, remainder);
                     builder.def_var(data_offset, data_offset_var);
                 }
+                Ir::Loop(open, jump_index) => {
+                    let successor_block = operation_to_block
+                        .get(&(index + 1))
+                        .expect("Successor block not found");
+                    let jump_block = operation_to_block.get(jump_index).expect("Block not found");
+                    let data_ptr = builder.ins().iadd(memory_ptr, data_offset_var);
+                    let memory_value = builder.ins().load(types::I8, MemFlags::new(), data_ptr, 0);
+
+                    match open {
+                        IrLoopType::Start => {
+                            let jump_condition =
+                                builder.ins().icmp_imm(IntCC::Equal, memory_value, 0);
+                            builder.ins().brif(
+                                jump_condition,
+                                *jump_block,
+                                &[],
+                                *successor_block,
+                                &[],
+                            );
+                        }
+                        IrLoopType::End => {
+                            let jump_condition =
+                                builder.ins().icmp_imm(IntCC::NotEqual, memory_value, 0);
+                            builder.ins().brif(
+                                jump_condition,
+                                *jump_block,
+                                &[],
+                                *successor_block,
+                                &[],
+                            );
+                        }
+                    }
+                    skip_next_jump = true;
+                }
                 _ => {
                     // do nothing
                 }
@@ -109,7 +153,9 @@ pub fn jit(ir_ops: impl AsRef<[Ir]>) {
         }
 
         let exit_block = builder.create_block();
-        builder.ins().jump(exit_block, &[]);
+        if !skip_next_jump {
+            builder.ins().jump(exit_block, &[]);
+        }
         builder.switch_to_block(exit_block);
         builder.ins().return_(&[]);
         builder.seal_all_blocks();
