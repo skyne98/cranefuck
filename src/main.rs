@@ -78,14 +78,13 @@ fn main() -> Result<()> {
             if verbose {
                 println!("Executing Brainfuck code in interpreter mode...");
             }
-            let result = interpreter::interpret(ir)?;
-            println!("Result: {}", result);
+            interpreter::interpret(ir, false)?;
         }
         "jit" => {
             if verbose {
                 println!("Executing Brainfuck code in JIT mode...");
             }
-            jit::jit(ir);
+            jit::jit(ir, false);
         }
         other => {
             eprintln!(

@@ -35,6 +35,10 @@ pub extern "C" fn io_input(input_buffer: *const i64) -> u8 {
     }
 }
 #[no_mangle]
+pub extern "C" fn io_input_noop(_: i64) -> u8 {
+    0
+}
+#[no_mangle]
 pub extern "C" fn io_output(value: u8) {
     let char = if value == 10 {
         if cfg!(windows) {
@@ -48,8 +52,10 @@ pub extern "C" fn io_output(value: u8) {
     print!("{}", char);
     std::io::stdout().flush().expect("Failed to flush stdout");
 }
+#[no_mangle]
+pub extern "C" fn io_output_noop(_: i8) {}
 
-pub fn jit(ir_ops: impl AsRef<[Ir]>) {
+pub fn jit(ir_ops: impl AsRef<[Ir]>, ignore_io: bool) {
     let mut flag_builder = settings::builder();
     flag_builder.set("use_colocated_libcalls", "false").unwrap();
     // FIXME set back to true once the x64 backend supports it.
@@ -61,8 +67,22 @@ pub fn jit(ir_ops: impl AsRef<[Ir]>) {
         .finish(settings::Flags::new(flag_builder))
         .unwrap();
     let mut jit_builder = JITBuilder::with_isa(isa, default_libcall_names());
-    jit_builder.symbol("__io_output", io_output as *const u8);
-    jit_builder.symbol("__io_input", io_input as *const u8);
+    jit_builder.symbol(
+        "__io_output",
+        if ignore_io {
+            io_output_noop as *const u8
+        } else {
+            io_output as *const u8
+        },
+    );
+    jit_builder.symbol(
+        "__io_input",
+        if ignore_io {
+            io_input_noop as *const u8
+        } else {
+            io_input as *const u8
+        },
+    );
     let mut module = JITModule::new(jit_builder);
 
     // IO functions
