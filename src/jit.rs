@@ -249,8 +249,6 @@ pub fn jit(ir_ops: impl AsRef<[Ir]>) {
         builder.finalize();
     }
 
-    let mut file = std::fs::File::create("jit.ll").unwrap();
-    write!(file, "{}", ctx.func.display()).expect("Unable to write to file");
     module.define_function(main_func, &mut ctx).unwrap();
     module.clear_context(&mut ctx);
 
