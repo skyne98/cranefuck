@@ -6,7 +6,7 @@ use std::{
 use anyhow::Result;
 use thiserror::Error;
 
-use crate::parser::{Ir, IrLoopType, Token};
+use crate::parser::{Ir, IrLoopType};
 
 #[derive(Error, Debug)]
 pub enum RuntimeError {
@@ -14,8 +14,6 @@ pub enum RuntimeError {
     IoError(#[from] std::io::Error),
     #[error("parse int error")]
     ParseIntError(#[from] std::num::ParseIntError),
-    #[error("unmatched loop at index {index}")]
-    UnmatchedLoop { index: usize },
 
     #[error("generic error")]
     Generic(#[from] anyhow::Error),
