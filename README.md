@@ -1,7 +1,3 @@
-Below is the revised README reflecting your updates:
-
----
-
 # Cranefuck
 
 [![License](https://img.shields.io/github/license/skyne98/cranefuck?style=flat-square)](https://github.com/skyne98/cranefuck/blob/main/LICENSE)
