@@ -2,7 +2,7 @@
 
 [![License](https://img.shields.io/github/license/skyne98/cranefuck?style=flat-square)](https://github.com/skyne98/cranefuck/blob/master/LICENSE)
 [![Build](https://img.shields.io/github/actions/workflow/status/skyne98/cranefuck/ci.yml?style=flat-square)](https://github.com/skyne98/cranefuck/actions)
-[![Cranelift](https://img.shields.io/badge/JIT-Cranelift-blue?style=flat-square)](https://github.com/bytecodealliance/wasmtime/tree/master/cranelift)
+[![Cranelift](https://img.shields.io/badge/jit-cranelift-blue?style=flat-square)](https://github.com/bytecodealliance/wasmtime/tree/master/cranelift)
 
 🚧 **PROTOTYPE – NOT PRODUCTION READY!** 🚧\
 _(But let's be honest: Brainfuck is never ready for production.)_
