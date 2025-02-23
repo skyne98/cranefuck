@@ -10,7 +10,10 @@ use std::{
     mem,
 };
 
-use crate::parser::{Ir, IrLoopType};
+use crate::{
+    optimizer::OptimizedIr,
+    parser::{Ir, IrLoopType},
+};
 
 #[no_mangle]
 pub extern "C" fn io_input(input_buffer: *const i64) -> u8 {
@@ -55,7 +58,7 @@ pub extern "C" fn io_output(value: u8) {
 #[no_mangle]
 pub extern "C" fn io_output_noop(_: i8) {}
 
-pub fn jit(ir_ops: impl AsRef<[Ir]>, ignore_io: bool) {
+pub fn jit(ir_ops: impl AsRef<[OptimizedIr]>, ignore_io: bool) {
     let mut flag_builder = settings::builder();
     flag_builder.set("use_colocated_libcalls", "false").unwrap();
     // FIXME set back to true once the x64 backend supports it.
@@ -140,7 +143,7 @@ pub fn jit(ir_ops: impl AsRef<[Ir]>, ignore_io: bool) {
         let mut operation_to_block = HashMap::new();
         for (index, ir) in ir_ops.iter().enumerate() {
             match ir {
-                Ir::Loop(_, _) => {
+                OptimizedIr::Ir(Ir::Loop(_, _)) => {
                     operation_to_block.insert(index, builder.create_block());
                 }
                 _ => {} // do nothing
@@ -149,7 +152,7 @@ pub fn jit(ir_ops: impl AsRef<[Ir]>, ignore_io: bool) {
         // Also create blocks for the successor of each loop instruction.
         // If index+1 is beyond the end, use exit_block.
         for (index, ir) in ir_ops.iter().enumerate() {
-            if let Ir::Loop(_, _) = ir {
+            if let OptimizedIr::Ir(Ir::Loop(_, _)) = ir {
                 let next_index = index + 1;
                 if next_index < ir_ops.len() {
                     operation_to_block
@@ -181,78 +184,91 @@ pub fn jit(ir_ops: impl AsRef<[Ir]>, ignore_io: bool) {
             }
 
             match ir {
-                Ir::Data(amount) => {
-                    let data_offset_var = builder.use_var(data_offset);
-                    let data_ptr = builder.ins().iadd(memory_ptr, data_offset_var);
+                OptimizedIr::Ir(ir) => match ir {
+                    Ir::Data(amount) => {
+                        let data_offset_var = builder.use_var(data_offset);
+                        let data_ptr = builder.ins().iadd(memory_ptr, data_offset_var);
 
-                    // Increase the value at the memory pointer by the amount
-                    let memory_value = builder.ins().load(types::I8, MemFlags::new(), data_ptr, 0);
-                    let constant = builder.ins().iconst(types::I8, *amount as i64);
-                    let (new_memory_value, _) = builder.ins().sadd_overflow(memory_value, constant);
-                    builder
-                        .ins()
-                        .store(MemFlags::new(), new_memory_value, data_ptr, 0);
-                }
-                Ir::Move(amount) => {
-                    let mut data_offset_var = builder.use_var(data_offset);
-                    data_offset_var = builder.ins().iadd_imm(data_offset_var, *amount as i64);
-                    let remainder = builder.ins().srem(data_offset_var, memory_len);
-                    let less_than_zero =
-                        builder.ins().icmp_imm(IntCC::SignedLessThan, remainder, 0);
-                    let increased_data_offset = builder.ins().iadd(remainder, memory_len);
-                    data_offset_var =
+                        // Increase the value at the memory pointer by the amount
+                        let memory_value =
+                            builder.ins().load(types::I8, MemFlags::new(), data_ptr, 0);
+                        let constant = builder.ins().iconst(types::I8, *amount as i64);
+                        let (new_memory_value, _) =
+                            builder.ins().sadd_overflow(memory_value, constant);
                         builder
                             .ins()
-                            .select(less_than_zero, increased_data_offset, remainder);
-                    builder.def_var(data_offset, data_offset_var);
-                }
-                Ir::IO(true) => {
-                    let data_offset_var = builder.use_var(data_offset);
-                    let data_ptr = builder.ins().iadd(memory_ptr, data_offset_var);
-                    let result = builder.ins().call(input_callee, &[input_buffer_ptr]);
-                    let result = builder.inst_results(result)[0];
-                    builder.ins().store(MemFlags::new(), result, data_ptr, 0);
-                }
-                Ir::IO(false) => {
-                    let data_offset_var = builder.use_var(data_offset);
-                    let data_ptr = builder.ins().iadd(memory_ptr, data_offset_var);
-                    let memory_value = builder.ins().load(types::I8, MemFlags::new(), data_ptr, 0);
-                    builder.ins().call(output_callee, &[memory_value]);
-                }
-                Ir::Loop(open, jump_index) => {
-                    let data_offset_var = builder.use_var(data_offset);
-                    let successor_block = operation_to_block
-                        .get(&(index + 1))
-                        .expect("Successor block not found");
-                    let jump_block = operation_to_block.get(jump_index).expect("Block not found");
-                    let data_ptr = builder.ins().iadd(memory_ptr, data_offset_var);
-                    let memory_value = builder.ins().load(types::I8, MemFlags::new(), data_ptr, 0);
-
-                    match open {
-                        IrLoopType::Start => {
-                            let jump_condition =
-                                builder.ins().icmp_imm(IntCC::Equal, memory_value, 0);
-                            builder.ins().brif(
-                                jump_condition,
-                                *jump_block,
-                                &[],
-                                *successor_block,
-                                &[],
-                            );
-                        }
-                        IrLoopType::End => {
-                            let jump_condition =
-                                builder.ins().icmp_imm(IntCC::NotEqual, memory_value, 0);
-                            builder.ins().brif(
-                                jump_condition,
-                                *jump_block,
-                                &[],
-                                *successor_block,
-                                &[],
-                            );
-                        }
+                            .store(MemFlags::new(), new_memory_value, data_ptr, 0);
                     }
-                    skip_next_jump = true;
+                    Ir::Move(amount) => {
+                        let mut data_offset_var = builder.use_var(data_offset);
+                        data_offset_var = builder.ins().iadd_imm(data_offset_var, *amount as i64);
+                        let remainder = builder.ins().srem(data_offset_var, memory_len);
+                        let less_than_zero =
+                            builder.ins().icmp_imm(IntCC::SignedLessThan, remainder, 0);
+                        let increased_data_offset = builder.ins().iadd(remainder, memory_len);
+                        data_offset_var =
+                            builder
+                                .ins()
+                                .select(less_than_zero, increased_data_offset, remainder);
+                        builder.def_var(data_offset, data_offset_var);
+                    }
+                    Ir::IO(true) => {
+                        let data_offset_var = builder.use_var(data_offset);
+                        let data_ptr = builder.ins().iadd(memory_ptr, data_offset_var);
+                        let result = builder.ins().call(input_callee, &[input_buffer_ptr]);
+                        let result = builder.inst_results(result)[0];
+                        builder.ins().store(MemFlags::new(), result, data_ptr, 0);
+                    }
+                    Ir::IO(false) => {
+                        let data_offset_var = builder.use_var(data_offset);
+                        let data_ptr = builder.ins().iadd(memory_ptr, data_offset_var);
+                        let memory_value =
+                            builder.ins().load(types::I8, MemFlags::new(), data_ptr, 0);
+                        builder.ins().call(output_callee, &[memory_value]);
+                    }
+                    Ir::Loop(open, jump_index) => {
+                        let data_offset_var = builder.use_var(data_offset);
+                        let successor_block = operation_to_block
+                            .get(&(index + 1))
+                            .expect("Successor block not found");
+                        let jump_block =
+                            operation_to_block.get(jump_index).expect("Block not found");
+                        let data_ptr = builder.ins().iadd(memory_ptr, data_offset_var);
+                        let memory_value =
+                            builder.ins().load(types::I8, MemFlags::new(), data_ptr, 0);
+
+                        match open {
+                            IrLoopType::Start => {
+                                let jump_condition =
+                                    builder.ins().icmp_imm(IntCC::Equal, memory_value, 0);
+                                builder.ins().brif(
+                                    jump_condition,
+                                    *jump_block,
+                                    &[],
+                                    *successor_block,
+                                    &[],
+                                );
+                            }
+                            IrLoopType::End => {
+                                let jump_condition =
+                                    builder.ins().icmp_imm(IntCC::NotEqual, memory_value, 0);
+                                builder.ins().brif(
+                                    jump_condition,
+                                    *jump_block,
+                                    &[],
+                                    *successor_block,
+                                    &[],
+                                );
+                            }
+                        }
+                        skip_next_jump = true;
+                    }
+                },
+                OptimizedIr::ResetToZero => {
+                    let data_offset_var = builder.use_var(data_offset);
+                    let data_ptr = builder.ins().iadd(memory_ptr, data_offset_var);
+                    let constant = builder.ins().iconst(types::I8, 0 as i64);
+                    builder.ins().store(MemFlags::new(), constant, data_ptr, 0);
                 }
                 _ => {
                     // do nothing

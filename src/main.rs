@@ -1,3 +1,5 @@
+#![feature(let_chains)]
+
 use anyhow::Result;
 use clap::Parser;
 use std::fs;
@@ -5,6 +7,7 @@ use std::io::{self, Read, Write};
 
 mod interpreter;
 mod jit;
+mod optimizer;
 mod parser;
 
 /// A robust Brainfuck CLI tool with REPL, file, and piped input support.
@@ -26,11 +29,16 @@ struct Args {
     /// Enable verbose output
     #[arg(short, long)]
     verbose: bool,
+
+    /// Enable optimizations
+    #[arg(short, long, default_value = "true")]
+    optimize: bool,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
     let verbose = args.verbose;
+    let optimize = args.optimize;
 
     // Determine the source of the Brainfuck code.
     let brainfuck_code = if let Some(file_path) = args.file {
@@ -72,19 +80,28 @@ fn main() -> Result<()> {
         println!("Intermediate Representation (IR): {:?}", ir);
     }
 
+    let optimized_ir = if optimize {
+        optimizer::optimize(&ir)
+    } else {
+        optimizer::noop_optimzer(&ir)
+    };
+    if verbose && optimize {
+        println!("Optimized IR: {:?}", optimized_ir);
+    }
+
     // Execute the Brainfuck code based on the selected mode.
     match args.mode.as_str() {
         "interpreter" => {
             if verbose {
                 println!("Executing Brainfuck code in interpreter mode...");
             }
-            interpreter::interpret(ir, false)?;
+            interpreter::interpret(optimized_ir, false)?;
         }
         "jit" => {
             if verbose {
                 println!("Executing Brainfuck code in JIT mode...");
             }
-            jit::jit(ir, false);
+            jit::jit(optimized_ir, false);
         }
         other => {
             eprintln!(
