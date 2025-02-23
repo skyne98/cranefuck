@@ -64,7 +64,7 @@ echo "+[----->+++<]>++." | cranefuck
 Disable JIT compilation and run in interpreter mode:
 
 ```sh
-echo "+[----->+++<]>++." | cranefuck --mode "interpreter"
+cranefuck --file examples/hello.bf --mode "interpreter"
 ```
 
 ## Contributing
