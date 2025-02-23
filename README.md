@@ -48,7 +48,7 @@ cargo build --release
 Execute a Brainfuck program from a file:
 
 ```sh
-cranefuck examples/hello.bf
+cranefuck --file examples/hello.bf
 ```
 
 ### Running from Standard Input
@@ -57,6 +57,14 @@ Pipe Brainfuck code directly into Cranefuck:
 
 ```sh
 echo "+[----->+++<]>++." | cranefuck
+```
+
+### Running interpreter mode
+
+Disable JIT compilation and run in interpreter mode:
+
+```sh
+echo "+[----->+++<]>++." | cranefuck --mode "interpreter"
 ```
 
 ## Contributing
