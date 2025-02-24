@@ -8,8 +8,8 @@ use std::{
 };
 
 use crate::{
-    optimizer::OptimizedIr,
     parser::{Ir, IrLoopType},
+    peephole::PeepholeIr,
 };
 
 #[no_mangle]
@@ -55,7 +55,7 @@ pub extern "C" fn io_output(value: u8) {
 #[no_mangle]
 pub extern "C" fn io_output_noop(_: i8) {}
 
-pub fn jit(ir_ops: impl AsRef<[OptimizedIr]>, ignore_io: bool) {
+pub fn jit(ir_ops: impl AsRef<[PeepholeIr]>, ignore_io: bool) {
     let mut flag_builder = settings::builder();
     flag_builder.set("use_colocated_libcalls", "false").unwrap();
     // FIXME set back to true once the x64 backend supports it.
@@ -140,7 +140,7 @@ pub fn jit(ir_ops: impl AsRef<[OptimizedIr]>, ignore_io: bool) {
         let mut operation_to_block = HashMap::new();
         for (index, ir) in ir_ops.iter().enumerate() {
             match ir {
-                OptimizedIr::Ir(Ir::Loop(_, _)) => {
+                PeepholeIr::Ir(Ir::Loop(_, _)) => {
                     operation_to_block.insert(index, builder.create_block());
                 }
                 _ => {} // do nothing
@@ -149,7 +149,7 @@ pub fn jit(ir_ops: impl AsRef<[OptimizedIr]>, ignore_io: bool) {
         // Also create blocks for the successor of each loop instruction.
         // If index+1 is beyond the end, use exit_block.
         for (index, ir) in ir_ops.iter().enumerate() {
-            if let OptimizedIr::Ir(Ir::Loop(_, _)) = ir {
+            if let PeepholeIr::Ir(Ir::Loop(_, _)) = ir {
                 let next_index = index + 1;
                 if next_index < ir_ops.len() {
                     operation_to_block
@@ -181,7 +181,7 @@ pub fn jit(ir_ops: impl AsRef<[OptimizedIr]>, ignore_io: bool) {
             }
 
             match ir {
-                OptimizedIr::Ir(ir) => match ir {
+                PeepholeIr::Ir(ir) => match ir {
                     Ir::Data(amount) => {
                         let data_offset_var = builder.use_var(data_offset);
                         let data_ptr = builder.ins().iadd(memory_ptr, data_offset_var);
@@ -261,13 +261,13 @@ pub fn jit(ir_ops: impl AsRef<[OptimizedIr]>, ignore_io: bool) {
                         skip_next_jump = true;
                     }
                 },
-                OptimizedIr::ResetToZero => {
+                PeepholeIr::ResetToZero => {
                     let data_offset_var = builder.use_var(data_offset);
                     let data_ptr = builder.ins().iadd(memory_ptr, data_offset_var);
                     let constant = builder.ins().iconst(types::I8, 0 as i64);
                     builder.ins().store(MemFlags::new(), constant, data_ptr, 0);
                 }
-                OptimizedIr::AddAndZero(target) => {
+                PeepholeIr::AddAndZero(target) => {
                     let source_offset_var = builder.use_var(data_offset);
                     let source_ptr = builder.ins().iadd(memory_ptr, source_offset_var);
                     let source_value =

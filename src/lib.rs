@@ -2,5 +2,5 @@
 
 pub mod interpreter;
 pub mod jit;
-pub mod optimizer;
 pub mod parser;
+pub mod peephole;

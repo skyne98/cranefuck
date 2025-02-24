@@ -1,22 +1,22 @@
 use crate::parser::{Ir, IrLoopType};
 
 #[derive(Debug, Clone)]
-pub enum OptimizedIr {
+pub enum PeepholeIr {
     Ir(Ir),
     ResetToZero,
     // [-N>+N<]
     AddAndZero(isize /* n */),
 }
-impl From<Ir> for OptimizedIr {
+impl From<Ir> for PeepholeIr {
     fn from(ir: Ir) -> Self {
-        OptimizedIr::Ir(ir)
+        PeepholeIr::Ir(ir)
     }
 }
 
-pub fn noop_optimzer(ir_ops: impl AsRef<[Ir]>) -> Vec<OptimizedIr> {
+pub fn noop_optimzer(ir_ops: impl AsRef<[Ir]>) -> Vec<PeepholeIr> {
     ir_ops.as_ref().iter().map(|ir| ir.clone().into()).collect()
 }
-pub fn optimize(ir_ops: impl AsRef<[Ir]>) -> Vec<OptimizedIr> {
+pub fn optimize(ir_ops: impl AsRef<[Ir]>) -> Vec<PeepholeIr> {
     let ir_ops = ir_ops.as_ref().to_vec();
 
     // Reset to zero pattern optimization
@@ -38,7 +38,7 @@ pub fn optimize(ir_ops: impl AsRef<[Ir]>) -> Vec<OptimizedIr> {
             && let Ir::Loop(IrLoopType::End, _) = next_next_op
             && (*amount == -1 || *amount == 1)
         {
-            optimized_ops.push(OptimizedIr::ResetToZero);
+            optimized_ops.push(PeepholeIr::ResetToZero);
             instruction_pointer += 3;
 
             // Shift all the indices on the right of the current instruction pointer by 2
@@ -56,7 +56,7 @@ pub fn optimize(ir_ops: impl AsRef<[Ir]>) -> Vec<OptimizedIr> {
     }
     // Update the loop pointers based on the new indices
     for i in 0..optimized_ops.len() {
-        if let OptimizedIr::Ir(Ir::Loop(_, index)) = &mut optimized_ops[i] {
+        if let PeepholeIr::Ir(Ir::Loop(_, index)) = &mut optimized_ops[i] {
             *index = index_map[*index];
         }
     }
@@ -74,27 +74,27 @@ pub fn optimize(ir_ops: impl AsRef<[Ir]>) -> Vec<OptimizedIr> {
     while instruction_pointer < previous_optimized_ops.len() {
         let current_op = &previous_optimized_ops[instruction_pointer];
         // [
-        if let OptimizedIr::Ir(Ir::Loop(IrLoopType::Start, _)) = current_op
+        if let PeepholeIr::Ir(Ir::Loop(IrLoopType::Start, _)) = current_op
             // -
             && let Some(first_op) = previous_optimized_ops.get(instruction_pointer + 1)
-            && let OptimizedIr::Ir(Ir::Data(amount)) = first_op
+            && let PeepholeIr::Ir(Ir::Data(amount)) = first_op
             && *amount == -1
             // >
             && let Some(second_op) = previous_optimized_ops.get(instruction_pointer + 2)
-            && let OptimizedIr::Ir(Ir::Move(move_right_amount)) = second_op
+            && let PeepholeIr::Ir(Ir::Move(move_right_amount)) = second_op
             // +
             && let Some(third_op) = previous_optimized_ops.get(instruction_pointer + 3)
-            && let OptimizedIr::Ir(Ir::Data(amount)) = third_op
+            && let PeepholeIr::Ir(Ir::Data(amount)) = third_op
             && *amount == 1
             // <
             && let Some(fourth_op) = previous_optimized_ops.get(instruction_pointer + 4)
-            && let OptimizedIr::Ir(Ir::Move(move_left_amount)) = fourth_op
+            && let PeepholeIr::Ir(Ir::Move(move_left_amount)) = fourth_op
             // ]
             && let Some(fifth_op) = previous_optimized_ops.get(instruction_pointer + 5)
-            && let OptimizedIr::Ir(Ir::Loop(IrLoopType::End, _)) = fifth_op
+            && let PeepholeIr::Ir(Ir::Loop(IrLoopType::End, _)) = fifth_op
             && *move_right_amount == -*move_left_amount
         {
-            optimized_ops.push(OptimizedIr::AddAndZero(*move_right_amount));
+            optimized_ops.push(PeepholeIr::AddAndZero(*move_right_amount));
             instruction_pointer += 6;
 
             // Shift all the indices on the right of the current instruction pointer by 5
@@ -108,7 +108,7 @@ pub fn optimize(ir_ops: impl AsRef<[Ir]>) -> Vec<OptimizedIr> {
     }
     // Update the loop pointers based on the new indices
     for i in 0..optimized_ops.len() {
-        if let OptimizedIr::Ir(Ir::Loop(_, index)) = &mut optimized_ops[i] {
+        if let PeepholeIr::Ir(Ir::Loop(_, index)) = &mut optimized_ops[i] {
             *index = index_map[*index];
         }
     }

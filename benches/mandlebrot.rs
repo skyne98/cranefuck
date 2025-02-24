@@ -1,7 +1,7 @@
 use cranefuck::interpreter::interpret;
 use cranefuck::jit::jit;
-use cranefuck::optimizer::{optimize, OptimizedIr};
 use cranefuck::parser::{to_ir, tokenize};
+use cranefuck::peephole::{optimize, PeepholeIr};
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 
 // A sample Brainfuck program. You can change this to any code you'd like to benchmark.
@@ -11,7 +11,7 @@ fn custom_config() -> Criterion {
     Criterion::default().sample_size(10)
 }
 
-fn prepare_ir() -> Vec<OptimizedIr> {
+fn prepare_ir() -> Vec<PeepholeIr> {
     // Tokenize and convert the Brainfuck code to intermediate representation (IR).
     let tokens = tokenize(BF_CODE);
     let ir = to_ir(tokens).expect("Failed to generate IR");

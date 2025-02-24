@@ -4,8 +4,8 @@ use anyhow::Result;
 use thiserror::Error;
 
 use crate::{
-    optimizer::OptimizedIr,
     parser::{Ir, IrLoopType},
+    peephole::PeepholeIr,
 };
 
 #[derive(Error, Debug)]
@@ -19,7 +19,7 @@ pub enum RuntimeError {
     Generic(#[from] anyhow::Error),
 }
 
-pub fn interpret(ir_ops: impl AsRef<[OptimizedIr]>, ignore_io: bool) -> Result<u8, RuntimeError> {
+pub fn interpret(ir_ops: impl AsRef<[PeepholeIr]>, ignore_io: bool) -> Result<u8, RuntimeError> {
     let mut memory = vec![0; 30_000];
     let mut instruction_pointer = 0;
     let mut data_pointer = 0;
@@ -38,7 +38,7 @@ pub fn interpret(ir_ops: impl AsRef<[OptimizedIr]>, ignore_io: bool) -> Result<u
 
         let op = &ops[instruction_pointer];
         match op {
-            OptimizedIr::Ir(op) => match op {
+            PeepholeIr::Ir(op) => match op {
                 Ir::Move(amount) => {
                     data_pointer = ((data_pointer as isize + amount)
                         .rem_euclid(memory.len() as isize))
@@ -96,10 +96,10 @@ pub fn interpret(ir_ops: impl AsRef<[OptimizedIr]>, ignore_io: bool) -> Result<u
                     }
                 }
             },
-            OptimizedIr::ResetToZero => {
+            PeepholeIr::ResetToZero => {
                 memory[data_pointer] = 0;
             }
-            OptimizedIr::AddAndZero(target) => {
+            PeepholeIr::AddAndZero(target) => {
                 let value = memory[data_pointer];
                 memory[data_pointer] = 0;
                 let wrapped_pointer =
