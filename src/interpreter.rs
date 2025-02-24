@@ -99,7 +99,7 @@ pub fn interpret(ir_ops: impl AsRef<[OptimizedIr]>, ignore_io: bool) -> Result<u
             OptimizedIr::ResetToZero => {
                 memory[data_pointer] = 0;
             }
-            OptimizedIr::CopyAndZero(amount) => {
+            OptimizedIr::AddAndZero(amount) => {
                 let value = memory[data_pointer];
                 memory[data_pointer] = 0;
                 let wrapped_pointer =

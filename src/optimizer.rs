@@ -4,7 +4,7 @@ use crate::parser::{Ir, IrLoopType};
 pub enum OptimizedIr {
     Ir(Ir),
     ResetToZero,
-    CopyAndZero(isize),
+    AddAndZero(isize),
 }
 impl From<Ir> for OptimizedIr {
     fn from(ir: Ir) -> Self {
@@ -90,7 +90,7 @@ pub fn optimize(ir_ops: impl AsRef<[Ir]>) -> Vec<OptimizedIr> {
             && let OptimizedIr::Ir(Ir::Loop(IrLoopType::End, _)) = fifth_op
             && *move_right_amount == -*move_left_amount
         {
-            optimized_ops.push(OptimizedIr::CopyAndZero(*move_right_amount));
+            optimized_ops.push(OptimizedIr::AddAndZero(*move_right_amount));
             instruction_pointer += 6;
 
             // Shift all the indices on the right of the current instruction pointer by 5
