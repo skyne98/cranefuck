@@ -1,7 +1,4 @@
-use std::{
-    collections::VecDeque,
-    io::{BufRead, Read, Write},
-};
+use std::{collections::VecDeque, io::Write};
 
 use anyhow::Result;
 use thiserror::Error;
@@ -101,6 +98,13 @@ pub fn interpret(ir_ops: impl AsRef<[OptimizedIr]>, ignore_io: bool) -> Result<u
             },
             OptimizedIr::ResetToZero => {
                 memory[data_pointer] = 0;
+            }
+            OptimizedIr::CopyAndZero(amount) => {
+                let value = memory[data_pointer];
+                memory[data_pointer] = 0;
+                let wrapped_pointer =
+                    ((data_pointer as isize + *amount).rem_euclid(memory.len() as isize)) as usize;
+                memory[wrapped_pointer] = memory[wrapped_pointer].wrapping_add_signed(value as i8);
             }
         }
 

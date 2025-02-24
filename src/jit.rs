@@ -1,7 +1,4 @@
-use cranelift::{
-    codegen::ir::{FuncRef, UserFuncName},
-    prelude::*,
-};
+use cranelift::{codegen::ir::UserFuncName, prelude::*};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{default_libcall_names, Linkage, Module};
 use std::{
@@ -269,6 +266,9 @@ pub fn jit(ir_ops: impl AsRef<[OptimizedIr]>, ignore_io: bool) {
                     let data_ptr = builder.ins().iadd(memory_ptr, data_offset_var);
                     let constant = builder.ins().iconst(types::I8, 0 as i64);
                     builder.ins().store(MemFlags::new(), constant, data_ptr, 0);
+                }
+                OptimizedIr::CopyAndZero(amount) => {
+                    panic!("CopyAndZero not implemented");
                 }
                 _ => {
                     // do nothing

@@ -31,7 +31,7 @@ struct Args {
     verbose: bool,
 
     /// Enable optimizations
-    #[arg(short, long, default_value = "true")]
+    #[arg(short, long)]
     optimize: bool,
 }
 
