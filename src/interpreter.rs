@@ -99,12 +99,22 @@ pub fn interpret(ir_ops: impl AsRef<[OptimizedIr]>, ignore_io: bool) -> Result<u
             OptimizedIr::ResetToZero => {
                 memory[data_pointer] = 0;
             }
-            OptimizedIr::AddAndZero(amount) => {
+            OptimizedIr::AddAndZero(target) => {
                 let value = memory[data_pointer];
                 memory[data_pointer] = 0;
                 let wrapped_pointer =
-                    ((data_pointer as isize + *amount).rem_euclid(memory.len() as isize)) as usize;
+                    ((data_pointer as isize + *target).rem_euclid(memory.len() as isize)) as usize;
                 memory[wrapped_pointer] = memory[wrapped_pointer].wrapping_add_signed(value as i8);
+            }
+            OptimizedIr::ScaledAddAndZero(target, x, y) => {
+                let value = memory[data_pointer];
+                let iterations = value as i64 / -x;
+                let target_pointer =
+                    ((data_pointer as isize + *target).rem_euclid(memory.len() as isize)) as usize;
+                let target_value = memory[target_pointer] as i64;
+                let new_target_value = target_value.wrapping_add(iterations * y);
+                memory[target_pointer] = new_target_value as u8;
+                memory[data_pointer] = 0;
             }
         }
 
