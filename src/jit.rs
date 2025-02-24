@@ -293,35 +293,6 @@ pub fn jit(ir_ops: impl AsRef<[OptimizedIr]>, ignore_io: bool) {
                         .ins()
                         .store(MemFlags::new(), constant, source_ptr, 0);
                 }
-                OptimizedIr::ScaledAddAndZero(target, x, y) => {
-                    let source_offset_var = builder.use_var(data_offset);
-                    let source_ptr = builder.ins().iadd(memory_ptr, source_offset_var);
-                    let source_value =
-                        builder
-                            .ins()
-                            .load(types::I8, MemFlags::new(), source_ptr, 0);
-
-                    let iterations = builder.ins().sdiv_imm(source_value, -*x);
-                    let target_offset_var =
-                        builder.ins().iadd_imm(source_offset_var, *target as i64);
-                    let target_ptr = builder.ins().iadd(memory_ptr, target_offset_var);
-                    let target_value =
-                        builder
-                            .ins()
-                            .load(types::I8, MemFlags::new(), target_ptr, 0);
-
-                    let new_target_value_increment = builder.ins().imul_imm(iterations, *y);
-                    let new_target_value =
-                        builder.ins().iadd(target_value, new_target_value_increment);
-                    builder
-                        .ins()
-                        .store(MemFlags::new(), new_target_value, target_ptr, 0);
-
-                    let constant = builder.ins().iconst(types::I8, 0 as i64);
-                    builder
-                        .ins()
-                        .store(MemFlags::new(), constant, source_ptr, 0);
-                }
                 _ => {
                     // do nothing
                 }
