@@ -1,5 +1,8 @@
+use thiserror::Error;
+
 use crate::parser::{Ir, IrLoopType};
 use crate::peephole::PeepholeIr;
+use anyhow::Result;
 use std::collections::HashSet;
 use std::fmt::{self, Debug, Formatter};
 
@@ -72,18 +75,25 @@ impl Tree {
     }
 }
 
+#[derive(Error, Debug)]
+pub enum TreeError {
+    #[error("unexpected end of input while parsing")]
+    UnexpectedEof,
+}
+
 // Tree building
 // =============
-pub fn build_tree(ir_ops: impl AsRef<[PeepholeIr]>) -> Tree {
+pub fn build_tree(ir_ops: impl AsRef<[PeepholeIr]>) -> Result<Tree, TreeError> {
     let mut tree = Tree::new();
     let mut ops = ir_ops.as_ref().iter().peekable();
-    tree.root = build_tree_inner(&mut tree, &mut ops);
-    tree
+    tree.root = build_tree_inner(&mut tree, &mut ops)?;
+    Ok(tree)
 }
+
 fn build_tree_inner(
     tree: &mut Tree,
     ops: &mut std::iter::Peekable<std::slice::Iter<PeepholeIr>>,
-) -> TreeId {
+) -> Result<TreeId, TreeError> {
     let mut sequence = Vec::new();
 
     while let Some(op) = ops.peek() {
@@ -94,7 +104,7 @@ fn build_tree_inner(
                     break;
                 }
                 ops.next();
-                let inner_id = build_tree_inner(tree, ops);
+                let inner_id = build_tree_inner(tree, ops)?;
                 let loop_id = tree.nodes.len();
                 tree.nodes.push(TreeNode {
                     id: loop_id,
@@ -106,7 +116,9 @@ fn build_tree_inner(
                 let ir_id = tree.nodes.len();
                 tree.nodes.push(TreeNode {
                     id: ir_id,
-                    node_type: TreeNodeType::Ir(ops.next().unwrap().clone()),
+                    node_type: TreeNodeType::Ir(
+                        ops.next().ok_or(TreeError::UnexpectedEof)?.clone(),
+                    ),
                 });
                 sequence.push(ir_id);
             }
@@ -118,5 +130,5 @@ fn build_tree_inner(
         id: sequence_id,
         node_type: TreeNodeType::Sequence(sequence),
     });
-    sequence_id
+    Ok(sequence_id)
 }
