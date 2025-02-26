@@ -1,6 +1,8 @@
+use std::fmt::Debug;
+
 use crate::parser::{Ir, IrLoopType};
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum PeepholeIr {
     Ir(Ir),
     ResetToZero,
@@ -10,6 +12,15 @@ pub enum PeepholeIr {
 impl From<Ir> for PeepholeIr {
     fn from(ir: Ir) -> Self {
         PeepholeIr::Ir(ir)
+    }
+}
+impl Debug for PeepholeIr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PeepholeIr::Ir(ir) => write!(f, "{:?}", ir),
+            PeepholeIr::ResetToZero => write!(f, "ResetToZero"),
+            PeepholeIr::AddAndZero(n) => write!(f, "AddAndZero({})", n),
+        }
     }
 }
 

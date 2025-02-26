@@ -6,6 +6,7 @@ use std::fs;
 use std::io::{self, Read, Write};
 use tree::build_tree;
 
+mod cfg;
 mod interpreter;
 mod jit;
 mod parser;

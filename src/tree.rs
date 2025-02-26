@@ -98,11 +98,11 @@ fn build_tree_inner(
 
     while let Some(op) = ops.peek() {
         match op {
-            PeepholeIr::Ir(Ir::Loop(loop_type, _)) => {
-                if *loop_type == IrLoopType::End {
-                    ops.next();
-                    break;
-                }
+            PeepholeIr::Ir(Ir::Loop(IrLoopType::End, _)) => {
+                ops.next();
+                break;
+            }
+            PeepholeIr::Ir(Ir::Loop(_, _)) => {
                 ops.next();
                 let inner_id = build_tree_inner(tree, ops)?;
                 let loop_id = tree.nodes.len();
