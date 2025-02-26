@@ -53,13 +53,17 @@ pub extern "C" fn io_output(value: u8) {
     std::io::stdout().flush().expect("Failed to flush stdout");
 }
 #[no_mangle]
-pub extern "C" fn io_output_noop(_: i8) {}
+pub extern "C" fn io_output_noop(_: u8) {}
 
 pub fn jit(ir_ops: impl AsRef<[OptimizedIr]>, ignore_io: bool) {
     let mut flag_builder = settings::builder();
-    flag_builder.set("use_colocated_libcalls", "false").unwrap();
-    // FIXME set back to true once the x64 backend supports it.
-    flag_builder.set("is_pic", "false").unwrap();
+    flag_builder
+        .set("use_colocated_libcalls", "false")
+        .expect("Invalid flag value");
+    flag_builder
+        .set("opt_level", "speed")
+        .expect("Invalid optimization level");
+    flag_builder.set("is_pic", "true").unwrap();
     let isa_builder = cranelift_native::builder().unwrap_or_else(|msg| {
         panic!("host machine is not supported: {msg}");
     });
@@ -126,7 +130,10 @@ pub fn jit(ir_ops: impl AsRef<[OptimizedIr]>, ignore_io: bool) {
 
         // Data pointer variable
         let data_offset = Variable::new(0);
+        let data_ptr = Variable::new(1);
         builder.declare_var(data_offset, types::I64);
+        builder.declare_var(data_ptr, types::I64);
+        builder.def_var(data_ptr, memory_ptr);
 
         // IO functions
         let input_callee = module.declare_func_in_func(io_input_func, &mut builder.func);
@@ -183,18 +190,18 @@ pub fn jit(ir_ops: impl AsRef<[OptimizedIr]>, ignore_io: bool) {
             match ir {
                 OptimizedIr::Ir(ir) => match ir {
                     Ir::Data(amount) => {
-                        let data_offset_var = builder.use_var(data_offset);
-                        let data_ptr = builder.ins().iadd(memory_ptr, data_offset_var);
+                        let data_ptr_val = builder.use_var(data_ptr);
 
                         // Increase the value at the memory pointer by the amount
                         let memory_value =
-                            builder.ins().load(types::I8, MemFlags::new(), data_ptr, 0);
+                            builder
+                                .ins()
+                                .load(types::I8, MemFlags::new(), data_ptr_val, 0);
                         let constant = builder.ins().iconst(types::I8, *amount as i64);
-                        let (new_memory_value, _) =
-                            builder.ins().sadd_overflow(memory_value, constant);
+                        let new_memory_value = builder.ins().iadd(memory_value, constant);
                         builder
                             .ins()
-                            .store(MemFlags::new(), new_memory_value, data_ptr, 0);
+                            .store(MemFlags::new(), new_memory_value, data_ptr_val, 0);
                     }
                     Ir::Move(amount) => {
                         let mut data_offset_var = builder.use_var(data_offset);
@@ -208,29 +215,30 @@ pub fn jit(ir_ops: impl AsRef<[OptimizedIr]>, ignore_io: bool) {
                                 .ins()
                                 .select(less_than_zero, increased_data_offset, remainder);
                         builder.def_var(data_offset, data_offset_var);
+
+                        // update the data_offset_ptr
+                        let data_ptr_val = builder.ins().iadd(memory_ptr, data_offset_var);
+                        builder.def_var(data_ptr, data_ptr_val);
                     }
                     Ir::IO(true) => {
-                        let data_offset_var = builder.use_var(data_offset);
-                        let data_ptr = builder.ins().iadd(memory_ptr, data_offset_var);
+                        let data_ptr = builder.use_var(data_ptr);
                         let result = builder.ins().call(input_callee, &[input_buffer_ptr]);
                         let result = builder.inst_results(result)[0];
                         builder.ins().store(MemFlags::new(), result, data_ptr, 0);
                     }
                     Ir::IO(false) => {
-                        let data_offset_var = builder.use_var(data_offset);
-                        let data_ptr = builder.ins().iadd(memory_ptr, data_offset_var);
+                        let data_ptr = builder.use_var(data_ptr);
                         let memory_value =
                             builder.ins().load(types::I8, MemFlags::new(), data_ptr, 0);
                         builder.ins().call(output_callee, &[memory_value]);
                     }
                     Ir::Loop(open, jump_index) => {
-                        let data_offset_var = builder.use_var(data_offset);
                         let successor_block = operation_to_block
                             .get(&(index + 1))
                             .expect("Successor block not found");
                         let jump_block =
                             operation_to_block.get(jump_index).expect("Block not found");
-                        let data_ptr = builder.ins().iadd(memory_ptr, data_offset_var);
+                        let data_ptr = builder.use_var(data_ptr);
                         let memory_value =
                             builder.ins().load(types::I8, MemFlags::new(), data_ptr, 0);
 
@@ -262,22 +270,18 @@ pub fn jit(ir_ops: impl AsRef<[OptimizedIr]>, ignore_io: bool) {
                     }
                 },
                 OptimizedIr::ResetToZero => {
-                    let data_offset_var = builder.use_var(data_offset);
-                    let data_ptr = builder.ins().iadd(memory_ptr, data_offset_var);
+                    let data_ptr = builder.use_var(data_ptr);
                     let constant = builder.ins().iconst(types::I8, 0 as i64);
                     builder.ins().store(MemFlags::new(), constant, data_ptr, 0);
                 }
                 OptimizedIr::AddAndZero(target) => {
-                    let source_offset_var = builder.use_var(data_offset);
-                    let source_ptr = builder.ins().iadd(memory_ptr, source_offset_var);
+                    let source_ptr = builder.use_var(data_ptr);
                     let source_value =
                         builder
                             .ins()
                             .load(types::I8, MemFlags::new(), source_ptr, 0);
 
-                    let target_offset_var =
-                        builder.ins().iadd_imm(source_offset_var, *target as i64);
-                    let target_ptr = builder.ins().iadd(memory_ptr, target_offset_var);
+                    let target_ptr = builder.ins().iadd_imm(source_ptr, *target as i64);
                     let target_value =
                         builder
                             .ins()
