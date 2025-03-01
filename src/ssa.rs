@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use crate::parser::Ir;
+use crate::parser::{Ir, IrLoopType};
 use crate::peephole::PeepholeIr;
 use crate::tree::{NodeKind, Tree};
 
@@ -88,6 +88,28 @@ impl SsaContext {
         self.block_predecessors = RefCell::new(HashMap::new());
     }
 
+    // Block
+    pub fn next_block(&self) -> BlockIndex {
+        let block_id = *self.next_block_id.borrow();
+        *self.next_block_id.borrow_mut() += 1;
+        block_id
+    }
+    pub fn create_block(&self) -> BlockIndex {
+        let block_id = self.next_block();
+        self.blocks
+            .borrow_mut()
+            .insert(block_id, Block::new(block_id));
+        block_id
+    }
+    pub fn get_block(&self, block: BlockIndex) -> std::cell::Ref<'_, Block> {
+        std::cell::Ref::map(self.blocks.borrow(), |blocks| blocks.get(&block).unwrap())
+    }
+    pub fn get_block_mut(&self, block: BlockIndex) -> std::cell::RefMut<'_, Block> {
+        std::cell::RefMut::map(self.blocks.borrow_mut(), |blocks| {
+            blocks.get_mut(&block).unwrap()
+        })
+    }
+
     // Utilities
     pub fn next_variable(&self, prefix: &str) -> VariableIndex {
         let mut variable_id = self.next_variable_id.borrow_mut();
@@ -96,11 +118,6 @@ impl SsaContext {
         let mut variable_to_alias = self.variable_to_alias.borrow_mut();
         variable_to_alias.insert(*variable_id, alias.clone());
         *variable_id
-    }
-    pub fn next_block(&mut self) -> BlockIndex {
-        let block_id = *self.next_block_id.borrow();
-        *self.next_block_id.borrow_mut() += 1;
-        block_id
     }
     pub fn add_variable_to_block(&self, variable: VariableIndex, block: BlockIndex) {
         self.variable_to_block.borrow_mut().insert(variable, block);
@@ -111,9 +128,6 @@ impl SsaContext {
             .get(&variable)
             .unwrap()
             .clone()
-    }
-    pub fn get_block(&self, block: BlockIndex) -> Block {
-        self.blocks.borrow().get(&block).unwrap().clone()
     }
     pub fn add_predecessor(&self, block: BlockIndex, predecessor: BlockIndex) {
         self.block_predecessors
@@ -219,13 +233,53 @@ impl SsaContext {
         }
     }
 
-    pub fn build_from_tree(&mut self, tree: &Tree) {
+    pub fn build_from_ir(&mut self, ir: impl AsRef<[PeepholeIr]>) {
         self.clear();
+        let ir = ir.as_ref();
 
-        let mut sequence_id_stack = vec![tree.root()];
-        let mut sequence_id_to_block = HashMap::new();
-        let mut latest_sequence_id = tree.root();
+        // Create the entry block
+        let entry_block = self.create_block();
+        self.entry_block = entry_block;
 
-        while let Some(sequence_id) = sequence_id_stack.pop() {}
+        // Create the IR index to block map
+        // then create the blocks
+        // Loops contain a head block and a body block
+        let mut ir_index_to_block = HashMap::new();
+        let mut blocks = vec![];
+        let mut current_block = entry_block;
+        for (ir_index, ir_op) in ir.iter().enumerate() {
+            match ir_op {
+                PeepholeIr::Ir(Ir::Loop(IrLoopType::Start, _)) => {
+                    let head_block = self.create_block();
+                    let body_block = self.create_block();
+                    ir_index_to_block.insert(ir_index, head_block);
+                    ir_index_to_block.insert(ir_index + 1, body_block);
+                    blocks.push(head_block);
+                    blocks.push(body_block);
+                    self.add_predecessor(head_block, current_block);
+                    self.add_predecessor(body_block, head_block);
+                    current_block = body_block;
+                }
+                PeepholeIr::Ir(Ir::Loop(IrLoopType::End, _)) => {
+                    // Make a new block after the loop
+                    let next_block = self.create_block();
+                    ir_index_to_block.insert(ir_index + 1, next_block);
+                    blocks.push(next_block);
+                    self.add_predecessor(next_block, current_block);
+                    current_block = next_block;
+                }
+                _ => {
+                    ir_index_to_block.insert(ir_index, current_block);
+                }
+            }
+        }
+
+        // Pretty-print the IR index to block map
+        println!("IR Index to Block Map");
+        println!("=====================");
+        for (ir_index, block) in ir_index_to_block {
+            let ir = &ir[ir_index];
+            println!("IR[{:?}] → Block {}", ir, block);
+        }
     }
 }

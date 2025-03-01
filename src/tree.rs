@@ -64,6 +64,13 @@ impl Tree {
     pub fn children(&self, id: NodeId) -> Option<&[NodeId]> {
         match self.get(id).map(|node| &node.kind) {
             Some(NodeKind::Sequence(seq)) => Some(seq),
+            Some(NodeKind::Loop(inner_id)) => {
+                let inner_node = self.get(*inner_id).unwrap();
+                match &inner_node.kind {
+                    NodeKind::Sequence(seq) => Some(seq),
+                    _ => None,
+                }
+            }
             _ => None,
         }
     }

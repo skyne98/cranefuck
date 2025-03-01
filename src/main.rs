@@ -45,11 +45,11 @@ fn main() -> Result<()> {
     let tokens = parser::tokenize(program);
     let ir = parser::to_ir(tokens)?;
     let optimized_ir = peephole::optimize(&ir);
-    let tree = build_tree(optimized_ir)?;
+    let tree = build_tree(&optimized_ir)?;
     println!("{:?}", tree);
 
     let mut ssa = SsaContext::new();
-    ssa.build_from_tree(&tree);
+    ssa.build_from_ir(&optimized_ir);
     ssa.print();
 
     // let args = Args::parse();
