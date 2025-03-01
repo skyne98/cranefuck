@@ -50,21 +50,22 @@ impl Tree {
         }
     }
 
-    /// Adds a node to the tree and returns its ID
-    fn add_node(&mut self, kind: NodeKind) -> NodeId {
+    pub fn add_node(&mut self, kind: NodeKind) -> NodeId {
         let id = self.nodes.len();
         self.nodes.push(Node { id, kind });
         id
     }
-
-    /// Gets a reference to a node by its ID
     pub fn get(&self, id: NodeId) -> Option<&Node> {
         self.nodes.get(id)
     }
-
-    /// Gets the root node ID
     pub fn root(&self) -> NodeId {
         self.root
+    }
+    pub fn children(&self, id: NodeId) -> Option<&[NodeId]> {
+        match self.get(id).map(|node| &node.kind) {
+            Some(NodeKind::Sequence(seq)) => Some(seq),
+            _ => None,
+        }
     }
 }
 
