@@ -14,7 +14,7 @@ use crate::{
     peephole::PeepholeIr,
 };
 
-pub fn jit(ir_ops: impl AsRef<[OptimizedIr]>, ignore_io: bool) {
+pub fn jit(ir_ops: impl AsRef<[PeepholeIr]>, ignore_io: bool) {
     let mut flag_builder = settings::builder();
     flag_builder
         .set("use_colocated_libcalls", "false")
