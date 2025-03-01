@@ -1,78 +1,38 @@
+use anyhow::Result;
+use std::fmt;
 use thiserror::Error;
 
 use crate::parser::{Ir, IrLoopType};
 use crate::peephole::PeepholeIr;
-use anyhow::Result;
-use std::collections::HashSet;
-use std::fmt::{self, Debug, Formatter};
 
-// Structures
-// ==========
-pub type TreeId = usize;
+/// A unique identifier for nodes in the abstract syntax tree
+pub type NodeId = usize;
+
+/// Represents the different types of nodes in the abstract syntax tree
 #[derive(Debug, Clone)]
-pub enum TreeNodeType {
-    Ir(PeepholeIr),
-    Loop(TreeId),
-    Sequence(Vec<TreeId>),
+pub enum NodeKind {
+    /// A primitive instruction
+    Instruction(PeepholeIr),
+    /// A loop containing another node
+    Loop(NodeId),
+    /// A sequence of nodes
+    Sequence(Vec<NodeId>),
 }
+
+/// A node in the abstract syntax tree
 #[derive(Debug, Clone)]
-pub struct TreeNode {
-    pub id: TreeId,
-    pub node_type: TreeNodeType,
+pub struct Node {
+    /// The unique identifier for this node
+    pub id: NodeId,
+    /// The kind of node
+    pub kind: NodeKind,
 }
+
+/// The complete abstract syntax tree
 #[derive(Clone)]
 pub struct Tree {
-    pub nodes: Vec<TreeNode>,
-    pub root: TreeId,
-}
-impl Tree {
-    pub fn new() -> Self {
-        Tree {
-            nodes: Vec::new(),
-            root: 0,
-        }
-    }
-}
-impl Debug for Tree {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        writeln!(f, "Tree {{")?;
-        self.fmt_node(self.root, f, 1, &mut HashSet::new())?;
-        writeln!(f, "}}")
-    }
-}
-impl Tree {
-    fn fmt_node(
-        &self,
-        id: TreeId,
-        f: &mut Formatter<'_>,
-        depth: usize,
-        visited: &mut HashSet<TreeId>,
-    ) -> fmt::Result {
-        if !visited.insert(id) {
-            return writeln!(f, "{}Node {}: <cycle>", "  ".repeat(depth), id);
-        }
-
-        let indent = "  ".repeat(depth);
-        let node = &self.nodes[id];
-
-        match &node.node_type {
-            TreeNodeType::Ir(ir) => {
-                writeln!(f, "{}Node {}: {:?}", indent, id, ir)
-            }
-            TreeNodeType::Loop(inner_id) => {
-                writeln!(f, "{}Node {}: Loop [", indent, id)?;
-                self.fmt_node(*inner_id, f, depth + 1, visited)?;
-                writeln!(f, "{}]", indent)
-            }
-            TreeNodeType::Sequence(seq) => {
-                writeln!(f, "{}Node {}: Sequence [", indent, id)?;
-                for &child_id in seq {
-                    self.fmt_node(child_id, f, depth + 1, visited)?;
-                }
-                writeln!(f, "{}]", indent)
-            }
-        }
-    }
+    nodes: Vec<Node>,
+    root: NodeId,
 }
 
 #[derive(Error, Debug)]
@@ -81,54 +41,105 @@ pub enum TreeError {
     UnexpectedEof,
 }
 
-// Tree building
-// =============
+impl Tree {
+    /// Creates a new empty tree
+    pub fn new() -> Self {
+        Self {
+            nodes: Vec::new(),
+            root: 0,
+        }
+    }
+
+    /// Adds a node to the tree and returns its ID
+    fn add_node(&mut self, kind: NodeKind) -> NodeId {
+        let id = self.nodes.len();
+        self.nodes.push(Node { id, kind });
+        id
+    }
+
+    /// Gets a reference to a node by its ID
+    pub fn get(&self, id: NodeId) -> Option<&Node> {
+        self.nodes.get(id)
+    }
+
+    /// Gets the root node ID
+    pub fn root(&self) -> NodeId {
+        self.root
+    }
+}
+
+impl fmt::Debug for Tree {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        struct DebugTree<'a>(&'a Tree, NodeId, usize);
+
+        impl<'a> fmt::Debug for DebugTree<'a> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                let tree = self.0;
+                let id = self.1;
+                let depth = self.2;
+                let indent = "  ".repeat(depth);
+
+                match tree.get(id).map(|node| &node.kind) {
+                    Some(NodeKind::Instruction(ir)) => {
+                        write!(f, "{indent}Instruction: {:?}", ir)
+                    }
+                    Some(NodeKind::Loop(inner_id)) => {
+                        writeln!(f, "{indent}Loop [")?;
+                        write!(f, "{:?}", DebugTree(tree, *inner_id, depth + 1))?;
+                        writeln!(f, "")?; // Add newline before closing bracket
+                        write!(f, "{indent}]")
+                    }
+                    Some(NodeKind::Sequence(seq)) => {
+                        writeln!(f, "{indent}Sequence [")?;
+                        for &child_id in seq {
+                            writeln!(f, "{:?}", DebugTree(tree, child_id, depth + 1))?;
+                        }
+                        write!(f, "{indent}]")
+                    }
+                    None => write!(f, "{indent}<invalid node>"),
+                }
+            }
+        }
+
+        writeln!(f, "Tree {{")?;
+        writeln!(f, "{:?}", DebugTree(self, self.root, 1))?;
+        writeln!(f, "}}")
+    }
+}
+
+/// Builds an abstract syntax tree from a sequence of IR operations
 pub fn build_tree(ir_ops: impl AsRef<[PeepholeIr]>) -> Result<Tree, TreeError> {
     let mut tree = Tree::new();
     let mut ops = ir_ops.as_ref().iter().peekable();
-    tree.root = build_tree_inner(&mut tree, &mut ops)?;
+    tree.root = parse_sequence(&mut tree, &mut ops)?;
     Ok(tree)
 }
 
-fn build_tree_inner(
+fn parse_sequence(
     tree: &mut Tree,
     ops: &mut std::iter::Peekable<std::slice::Iter<PeepholeIr>>,
-) -> Result<TreeId, TreeError> {
+) -> Result<NodeId, TreeError> {
     let mut sequence = Vec::new();
 
     while let Some(op) = ops.peek() {
         match op {
             PeepholeIr::Ir(Ir::Loop(IrLoopType::End, _)) => {
-                ops.next();
+                ops.next(); // Consume the end loop marker
                 break;
             }
             PeepholeIr::Ir(Ir::Loop(_, _)) => {
-                ops.next();
-                let inner_id = build_tree_inner(tree, ops)?;
-                let loop_id = tree.nodes.len();
-                tree.nodes.push(TreeNode {
-                    id: loop_id,
-                    node_type: TreeNodeType::Loop(inner_id),
-                });
+                ops.next(); // Consume the start loop marker
+                let inner_id = parse_sequence(tree, ops)?;
+                let loop_id = tree.add_node(NodeKind::Loop(inner_id));
                 sequence.push(loop_id);
             }
             _ => {
-                let ir_id = tree.nodes.len();
-                tree.nodes.push(TreeNode {
-                    id: ir_id,
-                    node_type: TreeNodeType::Ir(
-                        ops.next().ok_or(TreeError::UnexpectedEof)?.clone(),
-                    ),
-                });
-                sequence.push(ir_id);
+                let op_clone = ops.next().ok_or(TreeError::UnexpectedEof)?.clone();
+                let node_id = tree.add_node(NodeKind::Instruction(op_clone));
+                sequence.push(node_id);
             }
         }
     }
 
-    let sequence_id = tree.nodes.len();
-    tree.nodes.push(TreeNode {
-        id: sequence_id,
-        node_type: TreeNodeType::Sequence(sequence),
-    });
-    Ok(sequence_id)
+    Ok(tree.add_node(NodeKind::Sequence(sequence)))
 }

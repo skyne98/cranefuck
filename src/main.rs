@@ -2,15 +2,16 @@
 
 use anyhow::Result;
 use clap::Parser;
+use ssa::SsaContext;
 use std::fs;
 use std::io::{self, Read, Write};
 use tree::build_tree;
 
-mod cfg;
 mod interpreter;
 mod jit;
 mod parser;
 mod peephole;
+mod ssa;
 mod tree;
 
 /// A robust Brainfuck CLI tool with REPL, file, and piped input support.
@@ -39,12 +40,16 @@ struct Args {
 }
 
 fn main() -> Result<()> {
-    let program = "+[[+][-->>--]]+";
+    let program = ",[>+>+<<-].";
     let tokens = parser::tokenize(program);
     let ir = parser::to_ir(tokens)?;
     let optimized_ir = peephole::optimize(&ir);
-    let tree = build_tree(optimized_ir);
+    let tree = build_tree(optimized_ir)?;
     println!("{:?}", tree);
+
+    let mut ssa = SsaContext::new();
+    ssa.build_from_tree(&tree);
+    ssa.print();
 
     // let args = Args::parse();
     // let verbose = args.verbose;
