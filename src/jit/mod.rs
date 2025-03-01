@@ -1,61 +1,20 @@
 use cranelift::{codegen::ir::UserFuncName, prelude::*};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{default_libcall_names, Linkage, Module};
+use io::{io_input, io_input_noop, io_output, io_output_noop};
 use std::{
     collections::{HashMap, VecDeque},
-    io::Write,
     mem,
 };
+
+pub mod io;
 
 use crate::{
     parser::{Ir, IrLoopType},
     peephole::PeepholeIr,
 };
 
-#[no_mangle]
-pub extern "C" fn io_input(input_buffer: *const i64) -> u8 {
-    let input_buffer =
-        unsafe { std::mem::transmute::<*const i64, &mut VecDeque<char>>(input_buffer) };
-
-    if input_buffer.len() == 0 {
-        let mut line = String::new();
-        std::io::stdin()
-            .read_line(&mut line)
-            .expect("Failed to read line");
-        line = line.replace("\r\n", "\n");
-        input_buffer.extend(line.chars());
-    }
-
-    let character = input_buffer.pop_front().expect("No more input");
-
-    if character == '\n' {
-        10
-    } else {
-        character as u8
-    }
-}
-#[no_mangle]
-pub extern "C" fn io_input_noop(_: i64) -> u8 {
-    0
-}
-#[no_mangle]
-pub extern "C" fn io_output(value: u8) {
-    let char = if value == 10 {
-        if cfg!(windows) {
-            "\r\n".to_string()
-        } else {
-            "\n".to_string()
-        }
-    } else {
-        (value as char).to_string()
-    };
-    print!("{}", char);
-    std::io::stdout().flush().expect("Failed to flush stdout");
-}
-#[no_mangle]
-pub extern "C" fn io_output_noop(_: u8) {}
-
-pub fn jit(ir_ops: impl AsRef<[PeepholeIr]>, ignore_io: bool) {
+pub fn jit(ir_ops: impl AsRef<[OptimizedIr]>, ignore_io: bool) {
     let mut flag_builder = settings::builder();
     flag_builder
         .set("use_colocated_libcalls", "false")
@@ -232,40 +191,27 @@ pub fn jit(ir_ops: impl AsRef<[PeepholeIr]>, ignore_io: bool) {
                             builder.ins().load(types::I8, MemFlags::new(), data_ptr, 0);
                         builder.ins().call(output_callee, &[memory_value]);
                     }
-                    Ir::Loop(open, jump_index) => {
+                    Ir::Loop(IrLoopType::Start, jump_index) => {
+                        let jump_block = operation_to_block
+                            .get(&(jump_index + 1))
+                            .expect("Block not found");
                         let successor_block = operation_to_block
                             .get(&(index + 1))
                             .expect("Successor block not found");
-                        let jump_block =
-                            operation_to_block.get(jump_index).expect("Block not found");
                         let data_ptr = builder.use_var(data_ptr);
                         let memory_value =
                             builder.ins().load(types::I8, MemFlags::new(), data_ptr, 0);
 
-                        match open {
-                            IrLoopType::Start => {
-                                let jump_condition =
-                                    builder.ins().icmp_imm(IntCC::Equal, memory_value, 0);
-                                builder.ins().brif(
-                                    jump_condition,
-                                    *jump_block,
-                                    &[],
-                                    *successor_block,
-                                    &[],
-                                );
-                            }
-                            IrLoopType::End => {
-                                let jump_condition =
-                                    builder.ins().icmp_imm(IntCC::NotEqual, memory_value, 0);
-                                builder.ins().brif(
-                                    jump_condition,
-                                    *jump_block,
-                                    &[],
-                                    *successor_block,
-                                    &[],
-                                );
-                            }
-                        }
+                        let jump_condition = builder.ins().icmp_imm(IntCC::Equal, memory_value, 0);
+                        builder
+                            .ins()
+                            .brif(jump_condition, *jump_block, &[], *successor_block, &[]);
+                        skip_next_jump = true;
+                    }
+                    Ir::Loop(IrLoopType::End, jump_index) => {
+                        let jump_block =
+                            operation_to_block.get(jump_index).expect("Block not found");
+                        builder.ins().jump(*jump_block, &[]);
                         skip_next_jump = true;
                     }
                 },
