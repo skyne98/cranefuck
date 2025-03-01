@@ -1,59 +1,18 @@
 use cranelift::{codegen::ir::UserFuncName, prelude::*};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{default_libcall_names, Linkage, Module};
+use io::{io_input, io_input_noop, io_output, io_output_noop};
 use std::{
     collections::{HashMap, VecDeque},
-    io::Write,
     mem,
 };
+
+pub mod io;
 
 use crate::{
     optimizer::OptimizedIr,
     parser::{Ir, IrLoopType},
 };
-
-#[no_mangle]
-pub extern "C" fn io_input(input_buffer: *const i64) -> u8 {
-    let input_buffer =
-        unsafe { std::mem::transmute::<*const i64, &mut VecDeque<char>>(input_buffer) };
-
-    if input_buffer.len() == 0 {
-        let mut line = String::new();
-        std::io::stdin()
-            .read_line(&mut line)
-            .expect("Failed to read line");
-        line = line.replace("\r\n", "\n");
-        input_buffer.extend(line.chars());
-    }
-
-    let character = input_buffer.pop_front().expect("No more input");
-
-    if character == '\n' {
-        10
-    } else {
-        character as u8
-    }
-}
-#[no_mangle]
-pub extern "C" fn io_input_noop(_: i64) -> u8 {
-    0
-}
-#[no_mangle]
-pub extern "C" fn io_output(value: u8) {
-    let char = if value == 10 {
-        if cfg!(windows) {
-            "\r\n".to_string()
-        } else {
-            "\n".to_string()
-        }
-    } else {
-        (value as char).to_string()
-    };
-    print!("{}", char);
-    std::io::stdout().flush().expect("Failed to flush stdout");
-}
-#[no_mangle]
-pub extern "C" fn io_output_noop(_: u8) {}
 
 pub fn jit(ir_ops: impl AsRef<[OptimizedIr]>, ignore_io: bool) {
     let mut flag_builder = settings::builder();
