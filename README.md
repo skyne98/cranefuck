@@ -1,3 +1,7 @@
+<div align="center">
+  <img src="./assets/logo.png" alt="Cranefuck Logo">
+</div>
+
 # Cranefuck
 
 [![License](https://img.shields.io/github/license/skyne98/cranefuck?style=flat-square)](https://github.com/skyne98/cranefuck/blob/master/LICENSE)

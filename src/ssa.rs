@@ -5,7 +5,6 @@ use crate::parser::{Ir, IrLoopType};
 use crate::peephole::PeepholeIr;
 use crate::tree::{NodeKind, Tree};
 
-pub type Variable = String;
 pub type VariableIndex = usize;
 pub type BlockIndex = usize;
 
@@ -16,7 +15,7 @@ pub enum Terminator {
     Continue,         // Continue to the next block
     Jump(BlockIndex), // Unconditional jump
     ConditionalJump {
-        condition: Variable,
+        condition: VariableIndex,
         true_branch: BlockIndex,
         false_branch: BlockIndex,
     },
@@ -24,23 +23,24 @@ pub enum Terminator {
 
 #[derive(Debug, Clone)]
 pub enum InstructionOperation {
-    Phi(Vec<(Variable, BlockIndex)>),
-    Zero(Variable),
-    AddAndZero(isize),
-    Data(Variable, i64),
-    Move(Variable, isize),
-    Input,
-    Output(Variable),
+    Load(VariableIndex),               // Load value at a ptr
+    Zero(VariableIndex),               // Zero out a variable
+    AddConstant(VariableIndex, i64),   // Add a constant to a variable
+    Add(VariableIndex, VariableIndex), // Add two variables
+    MovePointer(VariableIndex, isize), // Move the pointer
+    Input,                             // Read a value from input
+    Output(VariableIndex),             // Write a value to output
 }
 
 #[derive(Debug, Clone)]
 pub struct Instruction {
-    pub result: Variable,
+    pub result: Option<VariableIndex>,
     pub operation: InstructionOperation,
 }
 
 #[derive(Debug, Clone)]
 pub struct Block {
+    pub alias: Option<String>,
     pub index: BlockIndex,
     pub instructions: Vec<Instruction>,
     pub terminator: Terminator,
@@ -49,6 +49,7 @@ pub struct Block {
 impl Block {
     pub fn new(index: BlockIndex) -> Self {
         Block {
+            alias: None,
             index,
             instructions: Vec::new(),
             terminator: Terminator::Return,
@@ -61,8 +62,9 @@ pub struct SsaContext {
     next_block_id: RefCell<BlockIndex>,
     pub blocks: RefCell<HashMap<BlockIndex, Block>>,
     pub entry_block: BlockIndex,
+    pub exit_block: BlockIndex,
     variable_to_block: RefCell<HashMap<VariableIndex, BlockIndex>>,
-    variable_to_alias: RefCell<HashMap<VariableIndex, Variable>>,
+    variable_to_alias: RefCell<HashMap<VariableIndex, String>>,
     block_predecessors: RefCell<HashMap<BlockIndex, Vec<BlockIndex>>>,
 }
 
@@ -73,6 +75,7 @@ impl SsaContext {
             next_block_id: RefCell::new(0),
             blocks: RefCell::new(HashMap::new()),
             entry_block: 0,
+            exit_block: 0,
             variable_to_block: RefCell::new(HashMap::new()),
             variable_to_alias: RefCell::new(HashMap::new()),
             block_predecessors: RefCell::new(HashMap::new()),
@@ -83,6 +86,7 @@ impl SsaContext {
         self.next_block_id = RefCell::new(0);
         self.blocks = RefCell::new(HashMap::new());
         self.entry_block = 0;
+        self.exit_block = 0;
         self.variable_to_block = RefCell::new(HashMap::new());
         self.variable_to_alias = RefCell::new(HashMap::new());
         self.block_predecessors = RefCell::new(HashMap::new());
@@ -101,6 +105,13 @@ impl SsaContext {
             .insert(block_id, Block::new(block_id));
         block_id
     }
+    pub fn create_block_aliased(&self, alias: String) -> BlockIndex {
+        let block_id = self.next_block();
+        let mut block = Block::new(block_id);
+        block.alias = Some(alias.clone());
+        self.blocks.borrow_mut().insert(block_id, block);
+        block_id
+    }
     pub fn get_block(&self, block: BlockIndex) -> std::cell::Ref<'_, Block> {
         std::cell::Ref::map(self.blocks.borrow(), |blocks| blocks.get(&block).unwrap())
     }
@@ -113,16 +124,19 @@ impl SsaContext {
     // Utilities
     pub fn next_variable(&self, prefix: &str) -> VariableIndex {
         let mut variable_id = self.next_variable_id.borrow_mut();
+        let this_variable_id = *variable_id;
         *variable_id += 1;
-        let alias = format!("{}{}", prefix, variable_id);
+        let alias = format!("{}_{}", prefix, this_variable_id);
         let mut variable_to_alias = self.variable_to_alias.borrow_mut();
-        variable_to_alias.insert(*variable_id, alias.clone());
-        *variable_id
+        variable_to_alias.insert(this_variable_id, alias.clone());
+        this_variable_id
     }
     pub fn add_variable_to_block(&self, variable: VariableIndex, block: BlockIndex) {
-        self.variable_to_block.borrow_mut().insert(variable, block);
+        if self.variable_to_block.borrow().contains_key(&variable) == false {
+            self.variable_to_block.borrow_mut().insert(variable, block);
+        }
     }
-    pub fn get_variable_alias(&self, variable: VariableIndex) -> Variable {
+    pub fn get_variable_alias(&self, variable: VariableIndex) -> String {
         self.variable_to_alias
             .borrow()
             .get(&variable)
@@ -172,7 +186,11 @@ impl SsaContext {
                 .get(&block_index)
                 .cloned()
                 .unwrap_or_default();
+            let alias_option = block.alias.as_ref();
 
+            if !alias_option.is_none() {
+                println!("  Alias: {}", alias_option.unwrap());
+            }
             if !predecessors.is_empty() {
                 println!("  Predecessors: {:?}", predecessors);
             }
@@ -183,28 +201,40 @@ impl SsaContext {
 
                 for instruction in &block.instructions {
                     let op_str = match &instruction.operation {
-                        InstructionOperation::Phi(sources) => {
-                            let sources_str: Vec<String> = sources
-                                .iter()
-                                .map(|(var, block)| format!("({} from {})", var, block))
-                                .collect();
-                            format!("φ [{}]", sources_str.join(", "))
+                        InstructionOperation::Load(var) => {
+                            let alias = self.get_variable_alias(*var);
+                            format!("load({})", alias)
                         }
-                        InstructionOperation::Zero(var) => format!("zero({})", var),
-                        InstructionOperation::AddAndZero(amount) => {
-                            format!("add_and_zero({})", amount)
+                        InstructionOperation::Zero(var) => {
+                            let alias = self.get_variable_alias(*var);
+                            format!("zero({})", alias)
                         }
-                        InstructionOperation::Data(var, value) => {
-                            format!("data({}, {})", var, value)
+                        InstructionOperation::AddConstant(var, constant) => {
+                            let alias = self.get_variable_alias(*var);
+                            format!("add({}, {})", alias, constant)
                         }
-                        InstructionOperation::Move(var, offset) => {
-                            format!("move({}, {})", var, offset)
+                        InstructionOperation::Add(var1, var2) => {
+                            let alias1 = self.get_variable_alias(*var1);
+                            let alias2 = self.get_variable_alias(*var2);
+                            format!("add({}, {})", alias1, alias2)
                         }
-                        InstructionOperation::Input => "input()".to_string(),
-                        InstructionOperation::Output(var) => format!("output({})", var),
+                        InstructionOperation::MovePointer(var, offset) => {
+                            let alias = self.get_variable_alias(*var);
+                            format!("move({}, {})", alias, offset)
+                        }
+                        InstructionOperation::Input => "input".to_string(),
+                        InstructionOperation::Output(var) => {
+                            let alias = self.get_variable_alias(*var);
+                            format!("output({})", alias)
+                        }
                     };
 
-                    println!("    {} = {}", instruction.result, op_str);
+                    if let Some(result) = &instruction.result {
+                        let alias = self.get_variable_alias(*result);
+                        println!("    {} = {}", alias, op_str);
+                    } else {
+                        println!("    {}", op_str);
+                    }
                 }
             } else {
                 println!("  No instructions");
@@ -222,9 +252,10 @@ impl SsaContext {
                     true_branch,
                     false_branch,
                 } => {
+                    let alias = self.get_variable_alias(*condition);
                     println!(
                         "  Terminator: if {} → Block {}, else → Block {}",
-                        condition, true_branch, false_branch
+                        alias, true_branch, false_branch
                     );
                 }
             }
@@ -250,7 +281,8 @@ impl SsaContext {
         for (ir_index, ir_op) in ir.iter().enumerate() {
             match ir_op {
                 PeepholeIr::Ir(Ir::Loop(IrLoopType::Start, _)) => {
-                    let head_block = self.create_block();
+                    let head_alias = format!("head_{}", ir_index);
+                    let head_block = self.create_block_aliased(head_alias);
                     let body_block = self.create_block();
                     ir_index_to_block.insert(ir_index, head_block);
                     ir_index_to_block.insert(ir_index + 1, body_block);
@@ -263,6 +295,7 @@ impl SsaContext {
                 PeepholeIr::Ir(Ir::Loop(IrLoopType::End, _)) => {
                     // Make a new block after the loop
                     let next_block = self.create_block();
+                    ir_index_to_block.insert(ir_index, current_block);
                     ir_index_to_block.insert(ir_index + 1, next_block);
                     blocks.push(next_block);
                     self.add_predecessor(next_block, current_block);
@@ -274,12 +307,168 @@ impl SsaContext {
             }
         }
 
+        // Add the exit block
+        let exit_block = self.create_block();
+        self.exit_block = exit_block;
+        ir_index_to_block.insert(ir.len(), exit_block);
+
         // Pretty-print the IR index to block map
         println!("IR Index to Block Map");
         println!("=====================");
-        for (ir_index, block) in ir_index_to_block {
-            let ir = &ir[ir_index];
-            println!("IR[{:?}] → Block {}", ir, block);
+        for (ir_index, block) in ir_index_to_block.iter() {
+            if ir_index == &ir.len() {
+                println!("IR Index {}: Exit Block", ir_index);
+                continue;
+            }
+            let ir = &ir[*ir_index];
+            println!("IR Index {}: {:?} -> Block {}", ir_index, ir, block);
+        }
+
+        // Convert the IR to SSA
+        let mut current_block_relative_ptr: isize = 0;
+        let mut current_block_id = entry_block;
+        let mut latest_ptr_var = self.next_variable("ptr");
+        let mut latest_var_per_cell_offset = HashMap::new();
+        for (ir_index, ir_op) in ir.iter().enumerate() {
+            if ir_index_to_block.contains_key(&ir_index) == false {
+                panic!("IR index {} not found in the block map", ir_index);
+            }
+            let block_id = ir_index_to_block[&ir_index];
+            if current_block_id != block_id {
+                current_block_id = block_id;
+                current_block_relative_ptr = 0;
+                latest_ptr_var = self.next_variable("ptr");
+                latest_var_per_cell_offset.clear();
+            }
+
+            let mut block = self.get_block_mut(block_id);
+            match ir_op {
+                PeepholeIr::Ir(Ir::Move(offset)) => {
+                    let var = self.next_variable("ptr");
+                    block.instructions.push(Instruction {
+                        result: Some(var),
+                        operation: InstructionOperation::MovePointer(latest_ptr_var, *offset),
+                    });
+                    self.add_variable_to_block(var, block_id);
+                    latest_ptr_var = var;
+                    current_block_relative_ptr += offset;
+                }
+                PeepholeIr::Ir(Ir::Data(value)) => {
+                    // Look up if there was a previous version of this cell
+                    let var = latest_var_per_cell_offset
+                        .entry(current_block_relative_ptr)
+                        .or_insert_with(|| {
+                            let r =
+                                self.next_variable(&format!("cell_{}", current_block_relative_ptr));
+                            self.add_variable_to_block(r, block_id);
+                            block.instructions.push(Instruction {
+                                result: Some(r),
+                                operation: InstructionOperation::Load(latest_ptr_var),
+                            });
+                            r
+                        });
+                    let new_var =
+                        self.next_variable(&format!("cell_{}", current_block_relative_ptr));
+                    self.add_variable_to_block(new_var, block_id);
+                    block.instructions.push(Instruction {
+                        result: Some(new_var),
+                        operation: InstructionOperation::AddConstant(*var, *value),
+                    });
+                    *var = new_var;
+                }
+                PeepholeIr::ResetToZero => {
+                    let var = latest_var_per_cell_offset
+                        .entry(current_block_relative_ptr)
+                        .or_insert_with(|| {
+                            self.next_variable(&format!("cell_{}", current_block_relative_ptr))
+                        });
+                    self.add_variable_to_block(*var, block_id);
+                    block.instructions.push(Instruction {
+                        result: None,
+                        operation: InstructionOperation::Zero(*var),
+                    });
+                }
+                PeepholeIr::AddAndZero(offset) => {
+                    // Handle source variable first and finish with it
+                    let source_offset = current_block_relative_ptr;
+                    let source_var_entry = latest_var_per_cell_offset
+                        .entry(source_offset)
+                        .or_insert_with(|| self.next_variable(&format!("cell_{}", source_offset)));
+                    let source_var = *source_var_entry;
+                    self.add_variable_to_block(source_var, block_id);
+                    let source_var_new = self.next_variable(&format!("cell_{}", source_offset));
+                    self.add_variable_to_block(source_var_new, block_id);
+
+                    // Now handle target variable
+                    let target_offset = current_block_relative_ptr + *offset;
+                    let target_var_entry = latest_var_per_cell_offset
+                        .entry(target_offset)
+                        .or_insert_with(|| self.next_variable(&format!("cell_{}", target_offset)));
+                    let target_var = *target_var_entry;
+                    self.add_variable_to_block(target_var, block_id);
+                    let target_var_new = self.next_variable(&format!("cell_{}", target_offset));
+                    self.add_variable_to_block(target_var_new, block_id);
+
+                    block.instructions.push(Instruction {
+                        result: Some(target_var_new),
+                        operation: InstructionOperation::Add(source_var, target_var),
+                    });
+                    block.instructions.push(Instruction {
+                        result: Some(source_var_new),
+                        operation: InstructionOperation::Zero(source_var),
+                    });
+
+                    // Update the latest variables
+                    latest_var_per_cell_offset.insert(source_offset, source_var_new);
+                    latest_var_per_cell_offset.insert(target_offset, target_var_new);
+                }
+                PeepholeIr::Ir(Ir::IO(true)) => {
+                    let var = self.next_variable("input");
+                    self.add_variable_to_block(var, block_id);
+                    block.instructions.push(Instruction {
+                        result: Some(var),
+                        operation: InstructionOperation::Input,
+                    });
+                }
+                PeepholeIr::Ir(Ir::IO(false)) => {
+                    let var = latest_var_per_cell_offset
+                        .entry(current_block_relative_ptr)
+                        .or_insert_with(|| {
+                            self.next_variable(&format!("cell_{}", current_block_relative_ptr))
+                        });
+                    self.add_variable_to_block(*var, block_id);
+                    block.instructions.push(Instruction {
+                        result: None,
+                        operation: InstructionOperation::Output(*var),
+                    });
+                }
+                PeepholeIr::Ir(Ir::Loop(IrLoopType::Start, target_ir_index)) => {
+                    let body_block = ir_index_to_block[&(ir_index + 1)];
+                    let exit_block = ir_index_to_block[&(*target_ir_index + 1)];
+
+                    // Load the current cell value
+                    let var = latest_var_per_cell_offset
+                        .entry(current_block_relative_ptr)
+                        .or_insert_with(|| {
+                            self.next_variable(&format!("cell_{}", current_block_relative_ptr))
+                        });
+                    self.add_variable_to_block(*var, block_id);
+                    block.instructions.push(Instruction {
+                        result: Some(*var),
+                        operation: InstructionOperation::Load(latest_ptr_var),
+                    });
+
+                    block.terminator = Terminator::ConditionalJump {
+                        condition: *var,
+                        true_branch: body_block,
+                        false_branch: exit_block,
+                    };
+                }
+                PeepholeIr::Ir(Ir::Loop(IrLoopType::End, target_ir_index)) => {
+                    let head_block = ir_index_to_block[target_ir_index];
+                    block.terminator = Terminator::Jump(head_block);
+                }
+            }
         }
     }
 }

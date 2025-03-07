@@ -50,6 +50,7 @@ fn main() -> Result<()> {
 
     let mut ssa = SsaContext::new();
     ssa.build_from_ir(&optimized_ir);
+    println!();
     ssa.print();
 
     // let args = Args::parse();
