@@ -52,7 +52,7 @@ impl Block {
             alias: None,
             index,
             instructions: Vec::new(),
-            terminator: Terminator::Return,
+            terminator: Terminator::Continue,
         }
     }
 }
@@ -156,6 +156,9 @@ impl SsaContext {
             .get(&block)
             .unwrap()
             .clone()
+    }
+    pub fn set_terminator(&self, block: BlockIndex, terminator: Terminator) {
+        self.get_block_mut(block).terminator = terminator;
     }
     pub fn print(&self) {
         println!("SSA IR Representation");
@@ -288,8 +291,6 @@ impl SsaContext {
                     ir_index_to_block.insert(ir_index + 1, body_block);
                     blocks.push(head_block);
                     blocks.push(body_block);
-                    self.add_predecessor(head_block, current_block);
-                    self.add_predecessor(body_block, head_block);
                     current_block = body_block;
                 }
                 PeepholeIr::Ir(Ir::Loop(IrLoopType::End, _)) => {
@@ -298,7 +299,6 @@ impl SsaContext {
                     ir_index_to_block.insert(ir_index, current_block);
                     ir_index_to_block.insert(ir_index + 1, next_block);
                     blocks.push(next_block);
-                    self.add_predecessor(next_block, current_block);
                     current_block = next_block;
                 }
                 _ => {
@@ -311,6 +311,7 @@ impl SsaContext {
         let exit_block = self.create_block();
         self.exit_block = exit_block;
         ir_index_to_block.insert(ir.len(), exit_block);
+        self.set_terminator(exit_block, Terminator::Return);
 
         // Pretty-print the IR index to block map
         println!("IR Index to Block Map");
@@ -468,6 +469,31 @@ impl SsaContext {
                     let head_block = ir_index_to_block[target_ir_index];
                     block.terminator = Terminator::Jump(head_block);
                 }
+            }
+        }
+
+        // Properly setup block predecessors
+        let mut block_ids = blocks.iter().cloned().collect::<Vec<_>>();
+        block_ids.sort();
+        for block_id in block_ids {
+            let block = self.get_block(block_id);
+            match &block.terminator {
+                Terminator::Continue => {
+                    let next_block_id = block_id + 1;
+                    self.add_predecessor(next_block_id, block_id);
+                }
+                Terminator::Jump(target_block_id) => {
+                    self.add_predecessor(*target_block_id, block_id);
+                }
+                Terminator::ConditionalJump {
+                    true_branch,
+                    false_branch,
+                    ..
+                } => {
+                    self.add_predecessor(*true_branch, block_id);
+                    self.add_predecessor(*false_branch, block_id);
+                }
+                _ => (),
             }
         }
     }
