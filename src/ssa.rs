@@ -272,14 +272,15 @@ impl SsaContext {
         let ir = ir.as_ref();
 
         // Create the entry block
+        let mut blocks = vec![];
         let entry_block = self.create_block();
         self.entry_block = entry_block;
+        blocks.push(entry_block);
 
         // Create the IR index to block map
         // then create the blocks
         // Loops contain a head block and a body block
         let mut ir_index_to_block = HashMap::new();
-        let mut blocks = vec![];
         let mut current_block = entry_block;
         for (ir_index, ir_op) in ir.iter().enumerate() {
             match ir_op {
