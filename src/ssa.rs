@@ -160,11 +160,13 @@ impl SsaContext {
     pub fn set_terminator(&self, block: BlockIndex, terminator: Terminator) {
         self.get_block_mut(block).terminator = terminator;
     }
+    pub fn block_ids(&self) -> Vec<BlockIndex> {
+        self.blocks.borrow().keys().cloned().collect()
+    }
     pub fn print(&self) {
         println!("SSA IR Representation");
         println!("====================");
         println!("Entry Block: {}", self.entry_block);
-        println!();
 
         // Get all blocks and sort them by index
         let blocks = self.blocks.borrow();
@@ -496,6 +498,114 @@ impl SsaContext {
                 }
                 _ => (),
             }
+        }
+    }
+
+    /// Figure out when variables point to the same data and calculate them once
+    pub fn dealias(&mut self) {
+        // Pointers
+        println!("Dealiasing Pointers");
+        println!("====================");
+        let block_ids = self.block_ids();
+        let mut block_to_dedup = HashMap::new();
+        for block in &block_ids {
+            let block_ref = self.get_block(*block);
+
+            // Find the zero offset (origin) pointer for the block
+            let mut zero_offset_ptr = None;
+            let mut ptr_to_offset = HashMap::new();
+            for instruction in &block_ref.instructions {
+                match &instruction.operation {
+                    InstructionOperation::MovePointer(ptr, offset) => {
+                        let result = instruction.result.unwrap();
+                        if let None = zero_offset_ptr {
+                            zero_offset_ptr = Some(*ptr);
+                            ptr_to_offset.insert(*ptr, 0);
+                        }
+
+                        let argument_offset = ptr_to_offset[ptr];
+                        let new_offset = argument_offset + offset;
+                        ptr_to_offset.insert(result, new_offset);
+                    }
+                    InstructionOperation::Load(ptr) => {
+                        if let None = zero_offset_ptr {
+                            zero_offset_ptr = Some(*ptr);
+                            ptr_to_offset.insert(*ptr, 0);
+                        }
+                    }
+                    _ => (),
+                }
+            }
+
+            // Now replace duplicate pointers that point to the same offsets
+            // and make a map that maps a pointer to its deduplicated alternative
+            let mut ptr_to_dedup = HashMap::new();
+            let mut offset_to_ptr = HashMap::new();
+            for (ptr, offset) in ptr_to_offset {
+                if let None = offset_to_ptr.get(&offset) {
+                    offset_to_ptr.insert(offset, ptr);
+                } else {
+                    let dedup_ptr = offset_to_ptr[&offset];
+                    ptr_to_dedup.insert(ptr, dedup_ptr);
+                }
+            }
+
+            // Pretty-print the deduplication map
+            for (ptr, dedup_ptr) in &ptr_to_dedup {
+                let alias = self.get_variable_alias(*ptr);
+                let dedup_alias = self.get_variable_alias(*dedup_ptr);
+                println!("Replacing {} with {}", alias, dedup_alias);
+            }
+
+            block_to_dedup.insert(block, ptr_to_dedup);
+        }
+
+        // Remove every instruction that produces a deduplicated pointer
+        for block in &block_ids {
+            let mut block_ref = self.get_block_mut(*block);
+            let ptr_to_dedup = block_to_dedup.get(block).unwrap();
+            let dup_ptr_values = ptr_to_dedup.values().cloned().collect::<Vec<_>>();
+            block_ref.instructions.retain(|instruction| {
+                if let Some(result) = &instruction.result {
+                    !dup_ptr_values.contains(result)
+                } else {
+                    true
+                }
+            });
+        }
+
+        // Now find the cell variables, which are duplicates, based on the duplicated ptrs in loads
+        println!();
+        println!("Dealiasing Cells");
+        println!("====================");
+        let mut block_to_cell_dedup = HashMap::new();
+        for block in &block_ids {
+            let block_ref = self.get_block(*block);
+
+            let mut ptr_to_cell = HashMap::new();
+            let mut cell_to_duplicate = HashMap::new();
+            for instruction in &block_ref.instructions {
+                match &instruction.operation {
+                    InstructionOperation::Load(ptr) => {
+                        let result = instruction.result.unwrap();
+                        if let Some(cell) = ptr_to_cell.get(ptr) {
+                            cell_to_duplicate.insert(result, *cell);
+                        } else {
+                            ptr_to_cell.insert(*ptr, result);
+                        }
+                    }
+                    _ => (),
+                }
+            }
+
+            // Pretty-print the deduplication map
+            for (cell, duplicate) in &cell_to_duplicate {
+                let alias = self.get_variable_alias(*cell);
+                let duplicate_alias = self.get_variable_alias(*duplicate);
+                println!("Replacing {} with {}", alias, duplicate_alias);
+            }
+
+            block_to_cell_dedup.insert(block, cell_to_duplicate);
         }
     }
 }

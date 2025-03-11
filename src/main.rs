@@ -53,6 +53,11 @@ fn main() -> Result<()> {
     println!();
     ssa.print();
 
+    println!();
+    ssa.dealias();
+    println!();
+    ssa.print();
+
     // let args = Args::parse();
     // let verbose = args.verbose;
     // let optimize = args.optimize;
