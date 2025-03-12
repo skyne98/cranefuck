@@ -347,6 +347,16 @@ impl SsaContext {
             }
 
             let mut block = self.get_block_mut(block_id);
+            // load the zero cell value
+            if current_block_relative_ptr == 0 {
+                let var = self.next_variable("cell_0");
+                block.instructions.push(Instruction {
+                    result: Some(var),
+                    operation: InstructionOperation::Load(latest_ptr_var),
+                });
+                self.add_variable_to_block(var, block_id);
+                latest_var_per_cell_offset.insert(0, var);
+            }
             match ir_op {
                 PeepholeIr::Ir(Ir::Move(offset)) => {
                     let var = self.next_variable("ptr");
@@ -455,16 +465,13 @@ impl SsaContext {
                     let exit_block = ir_index_to_block[&(*target_ir_index + 1)];
 
                     // Load the current cell value
+                    // or find existing cell value
                     let var = latest_var_per_cell_offset
                         .entry(current_block_relative_ptr)
                         .or_insert_with(|| {
                             self.next_variable(&format!("cell_{}", current_block_relative_ptr))
                         });
                     self.add_variable_to_block(*var, block_id);
-                    block.instructions.push(Instruction {
-                        result: Some(*var),
-                        operation: InstructionOperation::Load(latest_ptr_var),
-                    });
 
                     block.terminator = Terminator::ConditionalJump {
                         condition: *var,
