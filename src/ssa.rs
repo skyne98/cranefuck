@@ -388,8 +388,11 @@ impl SsaContext {
                             self.next_variable(&format!("cell_{}", current_block_relative_ptr))
                         });
                     self.add_variable_to_block(*var, block_id);
+                    let new_var =
+                        self.next_variable(&format!("cell_{}", current_block_relative_ptr));
+                    self.add_variable_to_block(new_var, block_id);
                     block.instructions.push(Instruction {
-                        result: None,
+                        result: Some(new_var),
                         operation: InstructionOperation::Zero(*var),
                     });
                 }
@@ -584,6 +587,20 @@ impl SsaContext {
             block_to_zero_offset_ptr.insert(block, zero_offset_ptr);
         }
 
+        // Remove the move instructions that create the alias pointers
+        for block in &block_ids {
+            let mut block_ref = self.get_block_mut(*block);
+            let ptr_to_dedup = block_to_dedup.get(block).unwrap();
+            block_ref.instructions.retain(|instruction| {
+                let result = instruction.result;
+                if let Some(result) = result {
+                    !ptr_to_dedup.contains_key(&result)
+                } else {
+                    true
+                }
+            });
+        }
+
         // Remove every instruction that produces a deduplicated pointer
         for block in &block_ids {
             let mut block_ref = self.get_block_mut(*block);
@@ -635,7 +652,7 @@ impl SsaContext {
 
         // Print the removed cell to pointer map
         println!();
-        println!("Removed Cell to Pointer Map");
+        println!("Removed Cell to original Pointer Map");
         println!("============================");
         for (cell, ptr) in &removed_cell_to_ptr {
             let cell_alias = self.get_variable_alias(*cell);
@@ -643,38 +660,80 @@ impl SsaContext {
             println!("Cell {} -> Pointer {}", cell_alias, ptr_alias);
         }
 
-        // Find an alternative cell for each removed cell
-        let mut removed_cell_alternative = HashMap::new();
+        // Map each cell to a new, original cell with the dealiased ptr value
+        // if doesn't exist, do a load
+        // 1. for each in removed_cell_to_ptr
+        // 2. find the load instruction that takes the ptr as an argument
+        // 3. add the cell that load produces to the map
+        // 4. if not found, add a new load instruction
+        // and add the cell to the map
+        let mut cell_to_dedup = HashMap::new();
         for (cell, ptr) in &removed_cell_to_ptr {
-            // Find an instruction that produces that loads the given pointer
-            // and add the resulting cell to the alternative map
             let block = cell_to_block[cell];
-            let block_ref = self.get_block(block);
-            let mut alternative_cell = None;
-            for instruction in &block_ref.instructions {
-                if let InstructionOperation::Load(ptr_var) = &instruction.operation {
-                    if ptr_var == ptr {
-                        alternative_cell = Some(instruction.result.unwrap());
-                        break;
+            let mut found = false;
+            {
+                let block_ref = self.get_block(block);
+                for instruction in &block_ref.instructions {
+                    if let InstructionOperation::Load(ptr) = &instruction.operation {
+                        if ptr == &removed_cell_to_ptr[cell] {
+                            cell_to_dedup.insert(*cell, instruction.result.unwrap());
+                            found = true;
+                            break;
+                        }
                     }
                 }
             }
-            if let None = alternative_cell {}
-
-            removed_cell_alternative.insert(*cell, alternative_cell.unwrap());
+            if !found {
+                // add at the start of the block
+                let mut block_ref = self.get_block_mut(block);
+                let new_cell = self.next_variable("cell_0");
+                block_ref.instructions.insert(
+                    0,
+                    Instruction {
+                        result: Some(new_cell),
+                        operation: InstructionOperation::Load(*ptr),
+                    },
+                );
+                cell_to_dedup.insert(*cell, new_cell);
+            }
         }
 
-        // Print the removed cell to alternative cell map
+        // Print the cell to dedup map
         println!();
-        println!("Removed Cell to Alternative Cell Map");
-        println!("===================================");
-        for (cell, alternative) in &removed_cell_alternative {
+        println!("Cell to Deduplicated Cell Map");
+        println!("============================");
+        for (cell, dedup_cell) in &cell_to_dedup {
             let cell_alias = self.get_variable_alias(*cell);
-            let alternative_alias = self.get_variable_alias(*alternative);
-            println!(
-                "Cell {} -> Alternative Cell {}",
-                cell_alias, alternative_alias
-            );
+            let dedup_alias = self.get_variable_alias(*dedup_cell);
+            println!("Cell {} -> Dedup Cell {}", cell_alias, dedup_alias);
+        }
+
+        // Replace every cell with its deduplicated version
+        for block in &block_ids {
+            let mut block_ref = self.get_block_mut(*block);
+            for instruction in &mut block_ref.instructions {
+                match &mut instruction.operation {
+                    InstructionOperation::Add(var1, var2) => {
+                        if let Some(dedup_var1) = cell_to_dedup.get(var1) {
+                            *var1 = *dedup_var1;
+                        }
+                        if let Some(dedup_var2) = cell_to_dedup.get(var2) {
+                            *var2 = *dedup_var2;
+                        }
+                    }
+                    InstructionOperation::AddConstant(var, _) => {
+                        if let Some(dedup_var) = cell_to_dedup.get(var) {
+                            *var = *dedup_var;
+                        }
+                    }
+                    InstructionOperation::Zero(var) => {
+                        if let Some(dedup_var) = cell_to_dedup.get(var) {
+                            *var = *dedup_var;
+                        }
+                    }
+                    _ => (),
+                }
+            }
         }
     }
 }
