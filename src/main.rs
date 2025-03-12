@@ -58,6 +58,8 @@ fn main() -> Result<()> {
     println!();
     ssa.print();
 
+    ssa.run();
+
     // let args = Args::parse();
     // let verbose = args.verbose;
     // let optimize = args.optimize;

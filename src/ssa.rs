@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::io::{Read, Write};
 
 use crate::parser::{Ir, IrLoopType};
 use crate::peephole::PeepholeIr;
@@ -742,5 +743,9 @@ impl SsaContext {
                 }
             }
         }
+    }
+
+    pub fn run(&mut self) {
+        println!("Running SSA interpreter");
     }
 }
