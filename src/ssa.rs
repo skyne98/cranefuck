@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 
 use crate::parser::{Ir, IrLoopType};
@@ -24,11 +24,11 @@ pub enum Terminator {
 
 #[derive(Debug, Clone)]
 pub enum InstructionOperation {
-    Load(VariableIndex),               // Load value at a ptr
+    Load(isize),                       // Load value at a ptr
+    Set(isize, VariableIndex),         // Set value at a ptr
     Zero(VariableIndex),               // Zero out a variable
     AddConstant(VariableIndex, i64),   // Add a constant to a variable
     Add(VariableIndex, VariableIndex), // Add two variables
-    MovePointer(VariableIndex, isize), // Move the pointer
     Input,                             // Read a value from input
     Output(VariableIndex),             // Write a value to output
 }
@@ -41,18 +41,24 @@ pub struct Instruction {
 
 #[derive(Debug, Clone)]
 pub struct Block {
-    pub alias: Option<String>,
     pub index: BlockIndex,
+    pub alias: Option<String>,
+    pub input_offsets: Vec<isize>,
+    pub output_offsets: Vec<isize>,
     pub instructions: Vec<Instruction>,
+    pub termination_offset: isize,
     pub terminator: Terminator,
 }
 
 impl Block {
     pub fn new(index: BlockIndex) -> Self {
         Block {
-            alias: None,
             index,
+            alias: None,
+            input_offsets: Vec::new(),
+            output_offsets: Vec::new(),
             instructions: Vec::new(),
+            termination_offset: 0,
             terminator: Terminator::Continue,
         }
     }
@@ -201,6 +207,12 @@ impl SsaContext {
             if !predecessors.is_empty() {
                 println!("  Predecessors: {:?}", predecessors);
             }
+            if !block.input_offsets.is_empty() {
+                println!("  Input Offsets: {:?}", block.input_offsets);
+            }
+            if !block.output_offsets.is_empty() {
+                println!("  Output Offsets: {:?}", block.output_offsets);
+            }
 
             // Print instructions
             if !block.instructions.is_empty() {
@@ -208,9 +220,12 @@ impl SsaContext {
 
                 for instruction in &block.instructions {
                     let op_str = match &instruction.operation {
-                        InstructionOperation::Load(var) => {
+                        InstructionOperation::Load(offset) => {
+                            format!("load({})", offset)
+                        }
+                        InstructionOperation::Set(offset, var) => {
                             let alias = self.get_variable_alias(*var);
-                            format!("load({})", alias)
+                            format!("set({}, {})", offset, alias)
                         }
                         InstructionOperation::Zero(var) => {
                             let alias = self.get_variable_alias(*var);
@@ -224,10 +239,6 @@ impl SsaContext {
                             let alias1 = self.get_variable_alias(*var1);
                             let alias2 = self.get_variable_alias(*var2);
                             format!("add({}, {})", alias1, alias2)
-                        }
-                        InstructionOperation::MovePointer(var, offset) => {
-                            let alias = self.get_variable_alias(*var);
-                            format!("move({}, {})", alias, offset)
                         }
                         InstructionOperation::Input => "input".to_string(),
                         InstructionOperation::Output(var) => {
@@ -248,6 +259,7 @@ impl SsaContext {
             }
 
             // Print terminator
+            println!("  Termination offset: {}", block.termination_offset);
             match &block.terminator {
                 Terminator::Return => println!("  Terminator: return"),
                 Terminator::Continue => println!("  Terminator: continue"),
@@ -285,6 +297,7 @@ impl SsaContext {
         // then create the blocks
         // Loops contain a head block and a body block
         let mut ir_index_to_block = HashMap::new();
+        let mut block_to_ir_indices = HashMap::new();
         let mut current_block = entry_block;
         for (ir_index, ir_op) in ir.iter().enumerate() {
             match ir_op {
@@ -293,7 +306,10 @@ impl SsaContext {
                     let head_block = self.create_block_aliased(head_alias);
                     let body_block = self.create_block();
                     ir_index_to_block.insert(ir_index, head_block);
-                    ir_index_to_block.insert(ir_index + 1, body_block);
+                    block_to_ir_indices
+                        .entry(head_block)
+                        .or_insert_with(Vec::new)
+                        .push(ir_index);
                     blocks.push(head_block);
                     blocks.push(body_block);
                     current_block = body_block;
@@ -303,11 +319,23 @@ impl SsaContext {
                     let next_block = self.create_block();
                     ir_index_to_block.insert(ir_index, current_block);
                     ir_index_to_block.insert(ir_index + 1, next_block);
+                    block_to_ir_indices
+                        .entry(current_block)
+                        .or_insert_with(Vec::new)
+                        .push(ir_index);
+                    block_to_ir_indices
+                        .entry(next_block)
+                        .or_insert_with(Vec::new)
+                        .push(ir_index + 1);
                     blocks.push(next_block);
                     current_block = next_block;
                 }
                 _ => {
                     ir_index_to_block.insert(ir_index, current_block);
+                    block_to_ir_indices
+                        .entry(current_block)
+                        .or_insert_with(Vec::new)
+                        .push(ir_index);
                 }
             }
         }
@@ -330,12 +358,74 @@ impl SsaContext {
             println!("IR Index {}: {:?} -> Block {}", ir_index, ir, block);
         }
 
+        // Gather a list of offsets which
+        // will be read in this block
+        let mut block_input_offsets = HashMap::new();
+        for block_id in blocks.iter() {
+            let mut current_offset = 0;
+            let block_ir = &block_to_ir_indices[block_id];
+            let mut block = self.get_block_mut(*block_id);
+            // add the zero offset
+            block_input_offsets
+                .entry(*block_id)
+                .or_insert_with(HashSet::new)
+                .insert(current_offset);
+            for ir_index in block_ir {
+                let ir_op = &ir[*ir_index];
+                match ir_op {
+                    PeepholeIr::Ir(Ir::Move(offset)) => {
+                        current_offset += offset;
+                        println!("Block {}: Move {}", block_id, offset);
+                        block_input_offsets
+                            .entry(*block_id)
+                            .or_insert_with(HashSet::new)
+                            .insert(current_offset);
+                    }
+                    _ => (),
+                }
+            }
+
+            println!("Block {}: Termination offset {}", block_id, current_offset);
+            block.termination_offset = current_offset;
+        }
+
+        // Pretty-print the block input offsets
+        println!();
+        println!("Block Input Offsets");
+        println!("==================");
+        for (block_id, offsets) in block_input_offsets.iter() {
+            println!("Block {}: {:?}", block_id, offsets);
+        }
+
+        // Add a load operation for each input offset
+        // and record the latest variable for each offset
+        // in each block
+        let mut latest_var_per_cell_offset = HashMap::new();
+        for block_id in blocks.iter() {
+            let mut block = self.get_block_mut(*block_id);
+            for input_offset in block_input_offsets[block_id].iter() {
+                let var = self.next_variable(&format!("cell_{}", input_offset));
+                self.add_variable_to_block(var, *block_id);
+                block.instructions.push(Instruction {
+                    result: Some(var),
+                    operation: InstructionOperation::Load(*input_offset),
+                });
+                latest_var_per_cell_offset
+                    .entry(*block_id)
+                    .or_insert_with(HashMap::new)
+                    .insert(*input_offset, var);
+            }
+        }
+
+        // Process each IR instruction
+        let mut modified_offsets_per_block = HashMap::new();
         // Convert the IR to SSA
         let mut current_block_relative_ptr: isize = 0;
         let mut current_block_id = entry_block;
-        let mut latest_ptr_var = self.next_variable("ptr");
-        let mut latest_var_per_cell_offset = HashMap::new();
         for (ir_index, ir_op) in ir.iter().enumerate() {
+            let latest_var_per_cell_offset = latest_var_per_cell_offset
+                .get_mut(&current_block_id)
+                .expect("No hashmap with latest variables found for current block id");
             if ir_index_to_block.contains_key(&ir_index) == false {
                 panic!("IR index {} not found in the block map", ir_index);
             }
@@ -343,46 +433,20 @@ impl SsaContext {
             if current_block_id != block_id {
                 current_block_id = block_id;
                 current_block_relative_ptr = 0;
-                latest_ptr_var = self.next_variable("ptr");
-                latest_var_per_cell_offset.clear();
             }
 
             let mut block = self.get_block_mut(block_id);
-            // load the zero cell value
-            if current_block_relative_ptr == 0 {
-                let var = self.next_variable("cell_0");
-                block.instructions.push(Instruction {
-                    result: Some(var),
-                    operation: InstructionOperation::Load(latest_ptr_var),
-                });
-                self.add_variable_to_block(var, block_id);
-                latest_var_per_cell_offset.insert(0, var);
-            }
+            modified_offsets_per_block.insert(block_id, HashSet::new());
+
             match ir_op {
                 PeepholeIr::Ir(Ir::Move(offset)) => {
-                    let var = self.next_variable("ptr");
-                    block.instructions.push(Instruction {
-                        result: Some(var),
-                        operation: InstructionOperation::MovePointer(latest_ptr_var, *offset),
-                    });
-                    self.add_variable_to_block(var, block_id);
-                    latest_ptr_var = var;
                     current_block_relative_ptr += offset;
                 }
                 PeepholeIr::Ir(Ir::Data(value)) => {
                     // Look up if there was a previous version of this cell
                     let var = latest_var_per_cell_offset
-                        .entry(current_block_relative_ptr)
-                        .or_insert_with(|| {
-                            let r =
-                                self.next_variable(&format!("cell_{}", current_block_relative_ptr));
-                            self.add_variable_to_block(r, block_id);
-                            block.instructions.push(Instruction {
-                                result: Some(r),
-                                operation: InstructionOperation::Load(latest_ptr_var),
-                            });
-                            r
-                        });
+                        .get_mut(&current_block_relative_ptr)
+                        .expect("No variable found for current block relative ptr");
                     let new_var =
                         self.next_variable(&format!("cell_{}", current_block_relative_ptr));
                     self.add_variable_to_block(new_var, block_id);
@@ -391,6 +455,12 @@ impl SsaContext {
                         operation: InstructionOperation::AddConstant(*var, *value),
                     });
                     *var = new_var;
+
+                    // Mark offset as modified
+                    modified_offsets_per_block
+                        .entry(block_id)
+                        .or_insert_with(HashSet::new)
+                        .insert(current_block_relative_ptr);
                 }
                 PeepholeIr::ResetToZero => {
                     let var = latest_var_per_cell_offset
@@ -406,6 +476,12 @@ impl SsaContext {
                         result: Some(new_var),
                         operation: InstructionOperation::Zero(*var),
                     });
+
+                    // Mark offset as modified
+                    modified_offsets_per_block
+                        .entry(block_id)
+                        .or_insert_with(HashSet::new)
+                        .insert(current_block_relative_ptr);
                 }
                 PeepholeIr::AddAndZero(offset) => {
                     // Handle source variable first and finish with it
@@ -440,6 +516,16 @@ impl SsaContext {
                     // Update the latest variables
                     latest_var_per_cell_offset.insert(source_offset, source_var_new);
                     latest_var_per_cell_offset.insert(target_offset, target_var_new);
+
+                    // Mark offsets as modified
+                    modified_offsets_per_block
+                        .entry(block_id)
+                        .or_insert_with(HashSet::new)
+                        .insert(source_offset);
+                    modified_offsets_per_block
+                        .entry(block_id)
+                        .or_insert_with(HashSet::new)
+                        .insert(target_offset);
                 }
                 PeepholeIr::Ir(Ir::IO(true)) => {
                     let var = self.next_variable("input");
@@ -448,6 +534,15 @@ impl SsaContext {
                         result: Some(var),
                         operation: InstructionOperation::Input,
                     });
+
+                    // Update latest variable
+                    latest_var_per_cell_offset.insert(current_block_relative_ptr, var);
+
+                    // Mark offset as modified
+                    modified_offsets_per_block
+                        .entry(block_id)
+                        .or_insert_with(HashSet::new)
+                        .insert(current_block_relative_ptr);
                 }
                 PeepholeIr::Ir(Ir::IO(false)) => {
                     let var = latest_var_per_cell_offset
@@ -485,6 +580,11 @@ impl SsaContext {
                     block.terminator = Terminator::Jump(head_block);
                 }
             }
+
+            block.output_offsets = modified_offsets_per_block[&block_id]
+                .iter()
+                .cloned()
+                .collect();
         }
 
         // Properly setup block predecessors
@@ -513,236 +613,6 @@ impl SsaContext {
         }
 
         println!("Block ids: {:?}", self.block_ids());
-    }
-
-    /// Figure out when variables point to the same data and calculate them once
-    pub fn dealias(&mut self) {
-        // Pointers
-        println!("Dealiasing Pointers");
-        println!("====================");
-        let block_ids = self.block_ids();
-        let mut block_to_dedup = HashMap::new();
-        let mut block_to_zero_offset_ptr = HashMap::new();
-        for block in &block_ids {
-            let block_ref = self.get_block(*block);
-
-            // Find the zero offset (origin) pointer for the block
-            let mut zero_offset_ptr = None;
-            let mut ptr_to_offset = HashMap::new();
-            for instruction in &block_ref.instructions {
-                match &instruction.operation {
-                    InstructionOperation::MovePointer(ptr, offset) => {
-                        let result = instruction.result.unwrap();
-                        if let None = zero_offset_ptr {
-                            zero_offset_ptr = Some(*ptr);
-                            ptr_to_offset.insert(*ptr, 0);
-                        }
-
-                        let argument_offset = ptr_to_offset.get(ptr).expect(
-                            format!(
-                                "Pointer {} not found in the offset map",
-                                self.get_variable_alias(*ptr)
-                            )
-                            .as_str(),
-                        );
-                        let existing_result_offset = ptr_to_offset.get(&result);
-                        if let None = existing_result_offset {
-                            ptr_to_offset.insert(result, *argument_offset + offset);
-                        }
-                    }
-                    InstructionOperation::Load(ptr) => {
-                        if let None = zero_offset_ptr {
-                            zero_offset_ptr = Some(*ptr);
-                            ptr_to_offset.insert(*ptr, 0);
-                        }
-                    }
-                    _ => (),
-                }
-            }
-
-            // Now replace duplicate pointers that point to the same offsets
-            // and make a map that maps a pointer to its deduplicated alternative
-            let mut ptr_to_aliases = HashMap::new();
-            let mut offset_to_ptr = HashMap::new();
-            for (ptr, offset) in ptr_to_offset {
-                if let None = offset_to_ptr.get(&offset) {
-                    offset_to_ptr.insert(offset, ptr);
-                } else {
-                    let existing_ptr = offset_to_ptr[&offset];
-                    if existing_ptr < ptr {
-                        ptr_to_aliases.insert(ptr, existing_ptr);
-                    } else {
-                        ptr_to_aliases.insert(existing_ptr, ptr);
-                        offset_to_ptr.insert(offset, ptr);
-                    }
-                }
-            }
-
-            // Pretty-print the deduplication map
-            println!("\tDeduplication Map for Block {}", block);
-            println!("\t-----------------------------");
-            for (ptr, dedup_ptr) in &ptr_to_aliases {
-                let alias = self.get_variable_alias(*ptr);
-                let dedup_alias = self.get_variable_alias(*dedup_ptr);
-                println!("\tPointer {} is an alias of {}", alias, dedup_alias);
-            }
-            println!(
-                "\tZero Offset Pointer: {:?}",
-                zero_offset_ptr.map(|ptr| self.get_variable_alias(ptr))
-            );
-
-            block_to_dedup.insert(block, ptr_to_aliases);
-            block_to_zero_offset_ptr.insert(block, zero_offset_ptr);
-        }
-
-        // Remove the move instructions that create the alias pointers
-        for block in &block_ids {
-            let mut block_ref = self.get_block_mut(*block);
-            let ptr_to_dedup = block_to_dedup.get(block).unwrap();
-            block_ref.instructions.retain(|instruction| {
-                let result = instruction.result;
-                if let Some(result) = result {
-                    !ptr_to_dedup.contains_key(&result)
-                } else {
-                    true
-                }
-            });
-        }
-
-        // Remove every instruction that produces a deduplicated pointer
-        for block in &block_ids {
-            let mut block_ref = self.get_block_mut(*block);
-            let ptr_to_dedup = block_to_dedup.get(block).unwrap();
-            let dup_ptr_values = ptr_to_dedup.values().cloned().collect::<Vec<_>>();
-            block_ref.instructions.retain(|instruction| {
-                if let Some(result) = &instruction.result {
-                    !dup_ptr_values.contains(result)
-                } else {
-                    true
-                }
-            });
-        }
-
-        // Find every cell that uses the deduplicated pointer
-        let mut removed_cell_to_ptr = HashMap::new();
-        let mut cell_to_block = HashMap::new();
-        for block in &block_ids {
-            let block_ref = self.get_block(*block);
-            let ptr_to_dedup = block_to_dedup.get(block).unwrap();
-            for instruction in &block_ref.instructions {
-                match &instruction.operation {
-                    InstructionOperation::Load(ptr) => {
-                        if let Some(dedup_ptr) = ptr_to_dedup.get(ptr) {
-                            removed_cell_to_ptr.insert(instruction.result.unwrap(), *dedup_ptr);
-                            cell_to_block.insert(instruction.result.unwrap(), *block);
-                        }
-                    }
-                    _ => (),
-                }
-            }
-        }
-        // Remove the instructions that produce those cells
-        for block in &block_ids {
-            let mut block_ref = self.get_block_mut(*block);
-            block_ref.instructions.retain(|instruction| {
-                if let InstructionOperation::Load(_) = &instruction.operation {
-                    let result = instruction.result.unwrap();
-                    if removed_cell_to_ptr.contains_key(&result) {
-                        false
-                    } else {
-                        true
-                    }
-                } else {
-                    true
-                }
-            });
-        }
-
-        // Print the removed cell to pointer map
-        println!();
-        println!("Removed Cell to original Pointer Map");
-        println!("============================");
-        for (cell, ptr) in &removed_cell_to_ptr {
-            let cell_alias = self.get_variable_alias(*cell);
-            let ptr_alias = self.get_variable_alias(*ptr);
-            println!("Cell {} -> Pointer {}", cell_alias, ptr_alias);
-        }
-
-        // Map each cell to a new, original cell with the dealiased ptr value
-        // if doesn't exist, do a load
-        // 1. for each in removed_cell_to_ptr
-        // 2. find the load instruction that takes the ptr as an argument
-        // 3. add the cell that load produces to the map
-        // 4. if not found, add a new load instruction
-        // and add the cell to the map
-        let mut cell_to_dedup = HashMap::new();
-        for (cell, ptr) in &removed_cell_to_ptr {
-            let block = cell_to_block[cell];
-            let mut found = false;
-            {
-                let block_ref = self.get_block(block);
-                for instruction in &block_ref.instructions {
-                    if let InstructionOperation::Load(ptr) = &instruction.operation {
-                        if ptr == &removed_cell_to_ptr[cell] {
-                            cell_to_dedup.insert(*cell, instruction.result.unwrap());
-                            found = true;
-                            break;
-                        }
-                    }
-                }
-            }
-            if !found {
-                // add at the start of the block
-                let mut block_ref = self.get_block_mut(block);
-                let new_cell = self.next_variable("cell_0");
-                block_ref.instructions.insert(
-                    0,
-                    Instruction {
-                        result: Some(new_cell),
-                        operation: InstructionOperation::Load(*ptr),
-                    },
-                );
-                cell_to_dedup.insert(*cell, new_cell);
-            }
-        }
-
-        // Print the cell to dedup map
-        println!();
-        println!("Cell to Deduplicated Cell Map");
-        println!("============================");
-        for (cell, dedup_cell) in &cell_to_dedup {
-            let cell_alias = self.get_variable_alias(*cell);
-            let dedup_alias = self.get_variable_alias(*dedup_cell);
-            println!("Cell {} -> Dedup Cell {}", cell_alias, dedup_alias);
-        }
-
-        // Replace every cell with its deduplicated version
-        for block in &block_ids {
-            let mut block_ref = self.get_block_mut(*block);
-            for instruction in &mut block_ref.instructions {
-                match &mut instruction.operation {
-                    InstructionOperation::Add(var1, var2) => {
-                        if let Some(dedup_var1) = cell_to_dedup.get(var1) {
-                            *var1 = *dedup_var1;
-                        }
-                        if let Some(dedup_var2) = cell_to_dedup.get(var2) {
-                            *var2 = *dedup_var2;
-                        }
-                    }
-                    InstructionOperation::AddConstant(var, _) => {
-                        if let Some(dedup_var) = cell_to_dedup.get(var) {
-                            *var = *dedup_var;
-                        }
-                    }
-                    InstructionOperation::Zero(var) => {
-                        if let Some(dedup_var) = cell_to_dedup.get(var) {
-                            *var = *dedup_var;
-                        }
-                    }
-                    _ => (),
-                }
-            }
-        }
     }
 
     pub fn run(&mut self) {

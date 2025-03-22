@@ -40,21 +40,19 @@ struct Args {
 }
 
 fn main() -> Result<()> {
-    let program = ",[>+>+<<-].";
+    // let program = ",[>+>+<<-].";
     // let program = "++[++[++]++]++";
+    let program = "++++++++[-]++++[>+<-]";
     let tokens = parser::tokenize(program);
     let ir = parser::to_ir(tokens)?;
     let optimized_ir = peephole::optimize(&ir);
+    println!("{:?}", optimized_ir);
+    println!();
     let tree = build_tree(&optimized_ir)?;
     println!("{:?}", tree);
 
     let mut ssa = SsaContext::new();
     ssa.build_from_ir(&optimized_ir);
-    println!();
-    ssa.print();
-
-    println!();
-    ssa.dealias();
     println!();
     ssa.print();
 
